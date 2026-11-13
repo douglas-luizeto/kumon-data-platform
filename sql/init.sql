@@ -8,7 +8,7 @@ CREATE SCHEMA transactional;
 -- Create and populate time_slots lookup table
 CREATE TABLE master.time_slots (
     time_slot_id SMALLSERIAL PRIMARY KEY,
-    day_of_week SMALLINT NOT NULL CHECK (day_of_week IN (2, 3, 5, 6)),
+    day_of_week SMALLINT NOT NULL CHECK (day_of_week IN (1, 2, 4, 5)),
     slot_time TIME NOT NULL,
     
     -- Garantees that no slots are equal
@@ -21,7 +21,7 @@ SELECT
     d.day_of_week,
     t.slot_time::TIME
 FROM 
-    (VALUES (2), (3), (5), (6)) AS d(day_of_week)
+    (VALUES (1), (2), (4), (5)) AS d(day_of_week)
 CROSS JOIN 
     (
         SELECT generate_series(
@@ -47,10 +47,10 @@ CREATE TABLE master.subjects (
 );
 
 INSERT INTO master.subjects (subject_id, subject_name) VALUES
-    ('m', 'Matemática'),
-    ('p', 'Português'),
-    ('i', 'Inglês'),
-    ('j', 'Japonês');
+    ('m', 'matemática'),
+    ('p', 'português'),
+    ('i', 'inglês'),
+    ('j', 'japonês');
 
 -- Create and populate the stages table
 CREATE TABLE master.stages (
@@ -145,7 +145,7 @@ CREATE TABLE master.accounts (
     -- finantial parameters
     monthly_fee DECIMAL(8,2) NOT NULL CHECK (monthly_fee >= 0),
     due_day smallint NOT NULL DEFAULT 5 CHECK (due_date IN (5, 10, 15, 20, 25, 30)),
-    default_payment_method TEXT NOT NULL DEFAULT 'Boleto' CHECK (default_payment_method IN ('Boleto', 'Dinheiro', 'Pix')),
+    default_payment_method TEXT NOT NULL DEFAULT 'boleto' CHECK (default_payment_method IN ('boleto', 'dinheiro', 'pix')),
 
     CONSTRAINT chk_enroll_after_birth CHECK (enroll_date > birth_date),
     CONSTRAINT chk_cancel_after_enroll CHECK (cancelation_date >= enroll_date),
@@ -164,19 +164,37 @@ CREATE TABLE transactional.payments (
     customer_id UUID NOT NULL REFERENCES master.customer(customer_id),
     payment_date DATE NOT NULL,
     amount DECIMAL(8,2) NOT NULL,
-    payment_method TEXT NOT NULL CHECK (payment_method IN ('Boleto', 'Dinheiro', 'Pix'))
+    payment_method TEXT NOT NULL CHECK (payment_method IN ('boleto', 'dinheiro', 'pix'))
 );
 
 CREATE TABLE transactional.interactions (
     interaction_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     account_id UUID NOT NULL REFERENCES master.accounts(account_id),
-    -- expected_date DATE NOT NULL CHECK (expected_date <= CURRENT_DATE),
+    expected_date DATE NOT NULL CHECK (expected_date <= CURRENT_DATE),
+    expected_time_slot_id SMALLINT NOT NULL REFERENCES master.time_slots(time_slot_id),
+   
+    start_ts TIMESTAMP,
+    end_ts TIMESTAMP CHECK (end_ts < NOW()),
 
-    -- start_ts TIMESTAMP,
-    -- end_ts TIMESTAMP CHECK (end_ts < NOW()),
-    -- rescheduled BOOLEAN DEFAULT FALSE,
+    days_studied_since_last SMALLINT CHECK (days_studied_since_last >= 0),
+    -- Indicates whether exercises were corrected or not
+    corrections BOOLEAN,
+    study_quality TEXT CHECK (study_quality IN ('baixa', 'média', 'alta')),
+
+    -- include behaviour tags
 
     -- constraints
-
+    CONSTRAINT chk_valid_expected_day_of_week CHECK (extract(dow from date expected_date) IN (1,2,4,5)),
+    CONSTRAINT chk_start_end_ts_not_null CHECK ((start_ts IS NULL AND end_ts IS NULL) OR (start_ts IS NOT NULL AND end_ts IS NOT NULL))
 
 );
+
+-- Todo: 
+--  Include tags with common behaviours 
+--  Check: start_ts and end_ts cannot be null if behaviour data is present. 
+
+--  Include teacher data
+--  Solve rescheduling problem
+
+--  Include payment methods table for easier evolution
+--  Include performance tables (fechamento) 
