@@ -5,7 +5,9 @@ CREATE SCHEMA transactional;
 -- Lookup Tables: time slots for scheduling; stage names x ordering for each subject
 -- ##################################################################################
 
+-- ##################################################################################
 -- Create and populate time_slots lookup table
+-- ##################################################################################
 CREATE TABLE master.time_slots (
     time_slot_id SMALLSERIAL PRIMARY KEY,
     day_of_week SMALLINT NOT NULL CHECK (day_of_week IN (1, 2, 4, 5)),
@@ -40,7 +42,10 @@ ORDER BY
     d.day_of_week, 
     t.slot_time;
 
+-- ##################################################################################
 -- Create and populate the subject table
+-- ##################################################################################
+
 CREATE TABLE master.subjects (
     subject_id CHAR(1) PRIMARY KEY,
     subject_name TEXT NOT NULL UNIQUE
@@ -52,7 +57,10 @@ INSERT INTO master.subjects (subject_id, subject_name) VALUES
     ('i', 'inglês'),
     ('j', 'japonês');
 
+-- ##################################################################################
 -- Create and populate the stages table
+-- ##################################################################################
+
 CREATE TABLE master.stages (
     stage_id SMALLSERIAL PRIMARY KEY,
     subject_id CHAR(1) NOT NULL REFERENCES master.subjects(subject_id),
@@ -99,8 +107,30 @@ FROM unnest(ARRAY[
 ]) WITH ORDINALITY AS t(stage_name, stage_order);
 
 -- ##################################################################################
--- Master Data Tables
+-- Master Data Tables: employees, customers, accounts, 
 -- ##################################################################################
+
+CREATE TABLE master.employees (
+    emp_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    emp_name TEXT NOT NULL,
+    employee_type TEXT NOT NULL DEFAULT 'Auxiliar',
+    
+    teaches_m BOOLEAN NOT NULL DEFAULT FALSE,
+    teaches_p BOOLEAN NOT NULL DEFAULT FALSE,
+    teaches_i BOOLEAN NOT NULL DEFAULT FALSE,
+    teaches_j BOOLEAN NOT NULL DEFAULT FALSE,
+
+    phone1 VARCHAR(15) NOT NULL CHECK (phone1 ~ '^[0-9]{10,15}$'),
+    phone2 VARCHAR(15) CHECK (phone2 ~ '^[0-9]{10,15}$'),
+    email TEXT,
+
+    salary DECIMAL(8,2) NOT NULL CHECK (salary >= 0),
+
+    contract_start DATE NOT NULL,
+    contract_end DATE,
+
+    CONSTRAINT chk_contract_end_after_start CHECK (contract_start <= contract_end)
+);
 
 CREATE TABLE master.customers (
     -- identification
@@ -127,12 +157,12 @@ CREATE TABLE master.customers (
 CREATE TABLE master.accounts (
     -- identification
     account_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    kumon_id INT PRIMARY KEY,
+    kumon_id INT NOT NULL,
     account_name TEXT NOT NULL,
     birth_date DATE NOT NULL CHECK (birth_date <= CURRENT_DATE AND birth_date > '1900-01-01'),
     customer_id UUID NOT NULL REFERENCES master.customers(customer_id),
     subject_id CHAR(1) NOT NULL,
-    enroll_stage_id SMALLINT,
+    enroll_stage_id SMALLINT NOT NULL,
 
     -- account status    
     enroll_date DATE NOT NULL CHECK (enroll_date <= CURRENT_DATE),
@@ -140,28 +170,37 @@ CREATE TABLE master.accounts (
 
     -- interaction parameters
     time_slot_1 SMALLINT NOT NULL REFERENCES master.time_slots(time_slot_id),
+    emp_1 UUID NOT NULL REFERENCES master.employees(emp_id),
+    
     time_slot_2 SMALLINT REFERENCES master.time_slots(time_slot_id),
+    emp_2 UUID REFERENCES master.employees(emp_id),
 
     -- finantial parameters
     monthly_fee DECIMAL(8,2) NOT NULL CHECK (monthly_fee >= 0),
-    due_day smallint NOT NULL DEFAULT 5 CHECK (due_date IN (5, 10, 15, 20, 25, 30)),
+    due_day smallint NOT NULL DEFAULT 5 CHECK (due_day IN (5, 10, 15, 20, 25, 30)),
     default_payment_method TEXT NOT NULL DEFAULT 'boleto' CHECK (default_payment_method IN ('boleto', 'dinheiro', 'pix')),
 
+    CONSTRAINT uq_kumon_id_subject_id UNIQUE (kumon_id, subject_id),
     CONSTRAINT chk_enroll_after_birth CHECK (enroll_date > birth_date),
     CONSTRAINT chk_cancel_after_enroll CHECK (cancelation_date >= enroll_date),
-    CONSTRAINT chk_diffente_time_slots CHECK (time_slot_1 != time_slot_2),
+    CONSTRAINT chk_different_time_slots CHECK (time_slot_1 != time_slot_2),
+    CONSTRAINT chk_emp2_time_slot2 CHECK ( 
+        (time_slot_2 IS NOT NULL) AND (emp_2 IS NOT NULL) 
+        OR 
+        (time_slot_2 IS NULL) AND (emp_2 IS NULL)
+    ),
     CONSTRAINT fk_account_subject_stage 
         FOREIGN KEY (subject_id, enroll_stage_id) 
         REFERENCES master.stages (subject_id, stage_id)
 );
 
--- #########################
--- Transactional tables
--- #########################
+-- ##################################################################################
+-- Transactional tables: payments, account interactions. 
+-- ##################################################################################
 
 CREATE TABLE transactional.payments (
     payment_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    customer_id UUID NOT NULL REFERENCES master.customer(customer_id),
+    customer_id UUID NOT NULL REFERENCES master.customers(customer_id),
     payment_date DATE NOT NULL,
     amount DECIMAL(8,2) NOT NULL,
     payment_method TEXT NOT NULL CHECK (payment_method IN ('boleto', 'dinheiro', 'pix'))
@@ -173,28 +212,59 @@ CREATE TABLE transactional.interactions (
     expected_date DATE NOT NULL CHECK (expected_date <= CURRENT_DATE),
     expected_time_slot_id SMALLINT NOT NULL REFERENCES master.time_slots(time_slot_id),
    
-    start_ts TIMESTAMP,
-    end_ts TIMESTAMP CHECK (end_ts < NOW()),
+    start_ts TIMESTAMPTZ,
+    end_ts TIMESTAMPTZ CHECK (end_ts <= NOW()),
 
     days_studied_since_last SMALLINT CHECK (days_studied_since_last >= 0),
     -- Indicates whether exercises were corrected or not
     corrections BOOLEAN,
     study_quality TEXT CHECK (study_quality IN ('baixa', 'média', 'alta')),
 
-    -- include behaviour tags
+    behaviour_tags TEXT[],
 
-    -- constraints
-    CONSTRAINT chk_valid_expected_day_of_week CHECK (extract(dow from date expected_date) IN (1,2,4,5)),
-    CONSTRAINT chk_start_end_ts_not_null CHECK ((start_ts IS NULL AND end_ts IS NULL) OR (start_ts IS NOT NULL AND end_ts IS NOT NULL))
+    CONSTRAINT chk_valid_expected_day_of_week CHECK (extract(dow from expected_date) IN (1,2,4,5)),
+    CONSTRAINT chk_attendance_metrics_consistency CHECK (
+    -- scenario: student is absent
+    (
+        start_ts IS NULL 
+        AND end_ts IS NULL 
+        AND days_studied_since_last IS NULL 
+        AND corrections IS NULL
+        AND study_quality IS NULL
+        AND behaviour_tags IS NULL
+    )
+    OR
+    -- scenario: student is present
+    (
+        start_ts IS NOT NULL 
+        AND end_ts IS NOT NULL 
+        AND end_ts >= start_ts
+        AND days_studied_since_last IS NOT NULL
+        AND corrections IS NOT NULL
+        AND study_quality IS NOT NULL
+    )
+)
+);
 
+CREATE TABLE transactional.monthly_performance (
+    performance_id SERIAL PRIMARY KEY,
+    account_id UUID NOT NULL REFERENCES master.accounts(account_id),
+    reference_month DATE NOT NULL CHECK (EXTRACT(DAY FROM reference_month) = 1),
+    
+    final_stage_id SMALLINT NOT NULL REFERENCES master.stages(stage_id),
+    final_lesson_number SMALLINT NOT NULL CHECK (
+        final_lesson_number >= 10 
+        AND final_lesson_number <= 200 
+        AND final_lesson_number % 10 = 0
+    ),
+    sheets_completed SMALLINT NOT NULL CHECK (sheets_completed >= 0),
+    
+    -- Idempotency: one register per month
+    CONSTRAINT uq_account_month UNIQUE (account_id, reference_month)
 );
 
 -- Todo: 
---  Include tags with common behaviours 
---  Check: start_ts and end_ts cannot be null if behaviour data is present. 
-
---  Include teacher data
 --  Solve rescheduling problem
 
 --  Include payment methods table for easier evolution
---  Include performance tables (fechamento) 
+--  Include cost centers table
