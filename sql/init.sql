@@ -2,7 +2,7 @@ CREATE SCHEMA master;
 CREATE SCHEMA transactional;
 
 -- ##################################################################################
--- Lookup Tables: time slots for scheduling; stage names x ordering for each subject
+-- Lookup Tables: time slots; stages ordering; payment methods; cost centers
 -- ##################################################################################
 
 -- ##################################################################################
@@ -12,8 +12,9 @@ CREATE TABLE master.time_slots (
     time_slot_id SMALLSERIAL PRIMARY KEY,
     day_of_week SMALLINT NOT NULL CHECK (day_of_week IN (1, 2, 4, 5)),
     slot_time TIME NOT NULL,
+    max_capacity SMALLINT NOT NULL DEFAULT 5 CHECK (max_capacity > 0),
     
-    -- Garantees that no slots are equal
+    -- Guarantees that no slots are equal
     CONSTRAINT uq_day_time UNIQUE (day_of_week, slot_time)
 );
 
@@ -107,7 +108,68 @@ FROM unnest(ARRAY[
 ]) WITH ORDINALITY AS t(stage_name, stage_order);
 
 -- ##################################################################################
--- Master Data Tables: employees, customers, accounts, 
+-- Create and populate the payment methods table
+-- ##################################################################################
+
+CREATE TABLE master.payment_methods (
+    payment_method_id SMALLSERIAL PRIMARY KEY,
+    method_name TEXT UNIQUE NOT NULL,
+    -- e.g. payment is received D+30
+    settlement_days SMALLINT NOT NULL DEFAULT 0 CHECK (settlement_days >= 0),
+    fee_fixed NUMERIC(8,2) NOT NULL DEFAULT 0 CHECK (fee_fixed >= 0),
+    fee_pct NUMERIC(6, 4) NOT NULL DEFAULT 0 CHECK (fee_pct >= 0 AND fee_pct <= 100.0)
+);
+
+INSERT INTO master.payment_methods (method_name, settlement_days, fee_fixed, fee_pct) VALUES
+    ('Boleto', 1, 2.49, 0.0000),
+    ('Boleto-Pix', 0, 0.99, 0.0000),
+    ('Pix', 0, 0.00, 0.0000),
+    ('Dinheiro', 0, 0.00, 0.0000);
+
+-- ##################################################################################
+-- Create and populate the cost centers table
+-- ##################################################################################
+
+CREATE TABLE master.cost_centers (
+    cost_center_id SMALLSERIAL PRIMARY KEY,
+    cost_center_name TEXT NOT NULL UNIQUE,
+    flow_type VARCHAR(3) NOT NULL CHECK (flow_type IN ('IN', 'OUT')),
+    -- NULL for revenue
+    cost_nature TEXT CHECK (cost_nature IN ('Fixed', 'Variable', 'Tax', 'Financial')),
+    description TEXT,
+
+    CONSTRAINT chk_nature_only_for_out CHECK (
+        (flow_type = 'IN' AND cost_nature IS NULL) OR
+        (flow_type = 'OUT' AND cost_nature IS NOT NULL)
+    )
+);
+
+INSERT INTO master.cost_centers (cost_center_name, flow_type, cost_nature, description) VALUES
+    -- Revenue (IN)
+    ('Mensalidades', 'IN', NULL, 'Receita recorrente das disciplinas matriculadas'),
+    ('Taxas de Matrícula', 'IN', NULL, 'Receita de adesão de novos alunos'),
+    ('Outras Receitas', 'IN', NULL, 'Rendimentos financeiros, vendas avulsas ou reembolsos'),
+
+    -- Variable costs and taxes (OUT)
+    ('Royalties e Taxas Franqueadora', 'OUT', 'Variable', 'Repasse percentual sobre faturamento e materiais'),
+    ('Tarifas Bancárias e Meios de Pagamento', 'OUT', 'Variable', 'Taxas de emissão de boleto, maquininha e manutenção de conta'),
+    ('Impostos', 'OUT', 'Tax', 'DAS / Simples Nacional e tributos municipais'),
+
+    -- Fixed costs (OUT)
+    ('Folha de Pagamento e Encargos', 'OUT', 'Fixed', 'Salários de auxiliares, encargos trabalhistas e benefícios'),
+    ('Benefícios de Funcionários', 'OUT', 'Fixed', 'Vale-transporte, vale-alimentação, seguro e bonificações'),
+    ('Aluguel e Condomínio', 'OUT', 'Fixed', 'Locação do imóvel comercial e taxas condominiais'),
+    ('Utilidades e Telecom', 'OUT', 'Fixed', 'Energia elétrica, água, internet e telefonia'),
+    ('Marketing e Aquisição', 'OUT', 'Fixed', 'Tráfego pago, panfletagem, eventos locais e material promocional'),
+    ('Material de Escritório e Limpeza', 'OUT', 'Fixed', 'Suprimentos administrativos, papelaria, limpeza e copa'),
+    ('Manutenção e Equipamentos', 'OUT', 'Fixed', 'Reparos prediais, ar-condicionado, móveis e TI'),
+    ('Serviços Terceirizados', 'OUT', 'Fixed', 'Contabilidade, assessoria jurídica e softwares de gestão'),
+
+    -- Financial (OUT)
+    ('Dívidas e Encargos Financeiros', 'OUT', 'Financial', 'Parcelas de empréstimos, financiamentos e juros bancários');
+
+-- ##################################################################################
+-- Master Data Tables: employees, customers, accounts
 -- ##################################################################################
 
 CREATE TABLE master.employees (
@@ -124,7 +186,7 @@ CREATE TABLE master.employees (
     phone2 VARCHAR(15) CHECK (phone2 ~ '^[0-9]{10,15}$'),
     email TEXT,
 
-    salary DECIMAL(8,2) NOT NULL CHECK (salary >= 0),
+    salary NUMERIC(8,2) NOT NULL CHECK (salary >= 0),
 
     contract_start DATE NOT NULL,
     contract_end DATE,
@@ -162,11 +224,11 @@ CREATE TABLE master.accounts (
     birth_date DATE NOT NULL CHECK (birth_date <= CURRENT_DATE AND birth_date > '1900-01-01'),
     customer_id UUID NOT NULL REFERENCES master.customers(customer_id),
     subject_id CHAR(1) NOT NULL,
-    enroll_stage_id SMALLINT NOT NULL,
+    initial_stage_id SMALLINT NOT NULL,
 
     -- account status    
     enroll_date DATE NOT NULL CHECK (enroll_date <= CURRENT_DATE),
-    cancelation_date DATE,
+    cancellation_date DATE,
 
     -- interaction parameters
     time_slot_1 SMALLINT NOT NULL REFERENCES master.time_slots(time_slot_id),
@@ -175,75 +237,89 @@ CREATE TABLE master.accounts (
     time_slot_2 SMALLINT REFERENCES master.time_slots(time_slot_id),
     emp_2 UUID REFERENCES master.employees(emp_id),
 
-    -- finantial parameters
-    monthly_fee DECIMAL(8,2) NOT NULL CHECK (monthly_fee >= 0),
-    due_day smallint NOT NULL DEFAULT 5 CHECK (due_day IN (5, 10, 15, 20, 25, 30)),
-    default_payment_method TEXT NOT NULL DEFAULT 'boleto' CHECK (default_payment_method IN ('boleto', 'dinheiro', 'pix')),
+    -- financial parameters
+    monthly_fee NUMERIC(8,2) NOT NULL CHECK (monthly_fee >= 0),
+    due_day SMALLINT NOT NULL DEFAULT 5 CHECK (due_day IN (5, 10, 15, 20, 25, 30)),
+    default_payment_method_id SMALLINT NOT NULL REFERENCES master.payment_methods(payment_method_id),
 
     CONSTRAINT uq_kumon_id_subject_id UNIQUE (kumon_id, subject_id),
     CONSTRAINT chk_enroll_after_birth CHECK (enroll_date > birth_date),
-    CONSTRAINT chk_cancel_after_enroll CHECK (cancelation_date >= enroll_date),
+    CONSTRAINT chk_cancel_after_enroll CHECK (cancellation_date >= enroll_date),
     CONSTRAINT chk_different_time_slots CHECK (time_slot_1 != time_slot_2),
-    CONSTRAINT chk_emp2_time_slot2 CHECK ( 
-        (time_slot_2 IS NOT NULL) AND (emp_2 IS NOT NULL) 
-        OR 
-        (time_slot_2 IS NULL) AND (emp_2 IS NULL)
-    ),
+    CONSTRAINT chk_emp2_time_slot2 CHECK ((time_slot_2 IS NULL) = (emp_2 IS NULL)),
     CONSTRAINT fk_account_subject_stage 
-        FOREIGN KEY (subject_id, enroll_stage_id) 
+        FOREIGN KEY (subject_id, initial_stage_id) 
         REFERENCES master.stages (subject_id, stage_id)
 );
 
 -- ##################################################################################
--- Transactional tables: payments, account interactions. 
+-- Transactional tables: financial, tuition, account interactions and performance 
 -- ##################################################################################
 
-CREATE TABLE transactional.payments (
-    payment_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+CREATE TABLE transactional.financial_transactions (
+    transaction_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    cost_center_id SMALLINT NOT NULL REFERENCES master.cost_centers(cost_center_id),
+    payment_method_id SMALLINT NOT NULL REFERENCES master.payment_methods(payment_method_id),
+    
+    competence_date DATE NOT NULL, 
+    transaction_date DATE NOT NULL,
+    amount NUMERIC(10,2) NOT NULL CHECK (amount > 0), 
+    description TEXT
+);
+
+CREATE TABLE transactional.tuition_payments (
+    transaction_id UUID PRIMARY KEY REFERENCES transactional.financial_transactions(transaction_id),
     customer_id UUID NOT NULL REFERENCES master.customers(customer_id),
-    payment_date DATE NOT NULL,
-    amount DECIMAL(8,2) NOT NULL,
-    payment_method TEXT NOT NULL CHECK (payment_method IN ('boleto', 'dinheiro', 'pix'))
+    reference_month DATE NOT NULL CHECK (EXTRACT(DAY FROM reference_month) = 1),
+    due_date DATE NOT NULL
 );
 
 CREATE TABLE transactional.interactions (
     interaction_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     account_id UUID NOT NULL REFERENCES master.accounts(account_id),
-    expected_date DATE NOT NULL CHECK (expected_date <= CURRENT_DATE),
+    expected_date DATE NOT NULL,
     expected_time_slot_id SMALLINT NOT NULL REFERENCES master.time_slots(time_slot_id),
    
+    rescheduled_from_id UUID UNIQUE REFERENCES transactional.interactions(interaction_id),
+    is_justified_absence BOOLEAN NOT NULL DEFAULT FALSE,
+
     start_ts TIMESTAMPTZ,
     end_ts TIMESTAMPTZ CHECK (end_ts <= NOW()),
 
     days_studied_since_last SMALLINT CHECK (days_studied_since_last >= 0),
     -- Indicates whether exercises were corrected or not
-    corrections BOOLEAN,
+    did_corrections BOOLEAN,
     study_quality TEXT CHECK (study_quality IN ('baixa', 'média', 'alta')),
 
-    behaviour_tags TEXT[],
+    behavior_tags TEXT[],
 
-    CONSTRAINT chk_valid_expected_day_of_week CHECK (extract(dow from expected_date) IN (1,2,4,5)),
+    CONSTRAINT uq_account_expected_slot UNIQUE (account_id, expected_date, expected_time_slot_id),
+    CONSTRAINT chk_valid_expected_day_of_week CHECK (EXTRACT(dow FROM expected_date) IN (1,2,4,5)),
+    CONSTRAINT chk_not_self_rescheduled CHECK (interaction_id != rescheduled_from_id),
     CONSTRAINT chk_attendance_metrics_consistency CHECK (
-    -- scenario: student is absent
-    (
-        start_ts IS NULL 
-        AND end_ts IS NULL 
-        AND days_studied_since_last IS NULL 
-        AND corrections IS NULL
-        AND study_quality IS NULL
-        AND behaviour_tags IS NULL
+        -- scenario: student is absent
+        (
+            start_ts IS NULL 
+            AND end_ts IS NULL 
+            AND days_studied_since_last IS NULL 
+            AND did_corrections IS NULL
+            AND study_quality IS NULL
+            AND behavior_tags IS NULL
+        )
+        OR
+        -- scenario: student is present
+        (
+            start_ts IS NOT NULL 
+            AND end_ts IS NOT NULL 
+            AND end_ts >= start_ts
+            AND expected_date <= CURRENT_DATE
+            AND (start_ts AT TIME ZONE 'America/Sao_Paulo')::DATE = expected_date
+            AND is_justified_absence = FALSE
+            AND days_studied_since_last IS NOT NULL
+            AND did_corrections IS NOT NULL
+            AND study_quality IS NOT NULL
+        )
     )
-    OR
-    -- scenario: student is present
-    (
-        start_ts IS NOT NULL 
-        AND end_ts IS NOT NULL 
-        AND end_ts >= start_ts
-        AND days_studied_since_last IS NOT NULL
-        AND corrections IS NOT NULL
-        AND study_quality IS NOT NULL
-    )
-)
 );
 
 CREATE TABLE transactional.monthly_performance (
@@ -259,12 +335,6 @@ CREATE TABLE transactional.monthly_performance (
     ),
     sheets_completed SMALLINT NOT NULL CHECK (sheets_completed >= 0),
     
-    -- Idempotency: one register per month
+    -- Idempotency: one record per month
     CONSTRAINT uq_account_month UNIQUE (account_id, reference_month)
 );
-
--- Todo: 
---  Solve rescheduling problem
-
---  Include payment methods table for easier evolution
---  Include cost centers table
