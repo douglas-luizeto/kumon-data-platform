@@ -222,7 +222,8 @@ CREATE TABLE master.accounts (
     kumon_id INT NOT NULL,
     account_name TEXT NOT NULL,
     birth_date DATE NOT NULL CHECK (birth_date <= CURRENT_DATE AND birth_date > '1900-01-01'),
-    customer_id UUID NOT NULL REFERENCES master.customers(customer_id),
+    gender CHAR(1) NOT NULL CHECK (gender IN ('M', 'F')),
+    customer_id UUID NOT NULL REFERENCES master.customers(customer_id), 
     subject_id CHAR(1) NOT NULL,
     initial_stage_id SMALLINT NOT NULL,
 
