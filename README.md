@@ -76,3 +76,25 @@ python scripts/generate_transactional_data.py
 
 Ao final da execução, o script roda uma bateria automatizada de auditoria que valida todas as chaves estrangeiras, a consistência entre estágios e disciplinas e exibe no terminal um resumo operacional acompanhado da DRE consolidada dos 24 meses antes de salvar os arquivos em `data/`
 
+---
+
+### 1.4 Ingestão em Lote no PostgreSQL 
+
+Com os arquivos CSV mestres e transacionais gerados e auditados localmente, a etapa final da camada de armazenamento consiste em carregar os dados nos schemas `master` e `transactional` do banco PostgreSQL (`kumon_db`). 
+#### Arquitetura de Carga e Decisões Técnicas 
+
+Para garantir alta performance, baixo consumo de memória e conformidade estrita com as restrições de integridade do banco, o script de ingestão foi construído utilizando `psycopg` (v3) puro com as seguintes características: 
+* **Protocolo Nativo `COPY FROM STDIN`:** Em vez de utilizar `INSERT` linha a linha ou abstrações pesadas de ORMs (como `pandas.to_sql` com SQLAlchemy), os arquivos são transmitidos em *stream* de blocos binários (`64 KB`) diretamente para o motor do PostgreSQL via comando `COPY`, reduzindo o tempo de carga de dezenas de milhares de interações para frações de segundo. 
+* **Transação Atômica Única (Tudo ou Nada):** Todo o pipeline de carga roda dentro de um único bloco transacional (`with psycopg.connect(...) as conn:`). Caso qualquer linha viole uma `CHECK` constraint, `UNIQUE` ou chave estrangeira, o PostgreSQL executa *rollback* completo automaticamente, impedindo estados parciais ou corrompidos no banco. 
+* **Idempotência e Ordem de Dependência:** Antes da carga, o script executa `TRUNCATE TABLE ... RESTART IDENTITY CASCADE` na ordem inversa das dependências e, em seguida, carrega as tabelas respeitando a hierarquia estrita de chaves estrangeiras (`employees` $\rightarrow$ `customers` $\rightarrow$ `accounts` $\rightarrow$ `interactions` $\rightarrow$ `monthly_performance` $\rightarrow$ `financial_transactions` $\rightarrow$ `tuition_payments`). 
+* **Mapeamento Dinâmico de Colunas e Sincronização de Sequences:** O script lê o cabeçalho de cada CSV dinamicamente para montar a instrução `COPY`, evitando erros por mudança na ordem de colunas, e ressincroniza as *sequences* (`setval`) após a inserção explícita de chaves seriais. 
+#### Executando a Carga no Banco
+
+Certifique-se de que o container `kumon_db` está ativo e execute: 
+
+```
+bash python scripts/load_to_postgres.py
+```
+
+--- 
+
