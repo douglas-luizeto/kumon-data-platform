@@ -21,14 +21,15 @@ np.random.seed(RANDOM_SEED)
 fake = Faker("pt_BR")
 Faker.seed(RANDOM_SEED)
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = BASE_DIR / "data/raw"
+OUTPUT_DIR = BASE_DIR / "data"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Historical Window
 START_DATE = datetime.strptime("2024-07-01", "%Y-%m-%d").date()
 END_DATE = datetime.strptime("2026-06-30", "%Y-%m-%d").date()
+
+MAX_CAPACITY_PER_EMP_SLOT = 5
 
 # ==========================================
 # STAGE MAPS (BASED ON init.sql)
@@ -131,10 +132,12 @@ def generate_customers(n_customers=100):
             "phone2": f"24{random.randint(900000000, 999999999)}" if random.random() < 0.3 else None,
             "street": fake.street_name(),
             "address_number": str(random.randint(1, 1500)),
-            "complement": random.choice([f"Apto {random.randint(101, 804)}", 
-                                         f"Bloco {random.choice(['A', 'B', 'C'])} - Apto {random.randint(10, 40)}", 
-                                         "Casa 2", 
-                                         "Fundos"]) if random.random() < 0.4 else None,
+            "complement": random.choice([
+                f"Apto {random.randint(101, 804)}",
+                f"Bloco {random.choice(['A', 'B', 'C'])} - Apto {random.randint(10, 40)}",
+                "Casa 2",
+                "Fundos"
+            ]) if random.random() < 0.4 else None,
             "district": fake.bairro(),
             "zip_code": f"25{random.randint(10000, 99999)}",
             "city": "Petrópolis",
@@ -149,16 +152,58 @@ def generate_customers(n_customers=100):
     df["phone1"] = df["phone1"].astype(str)
     df["phone2"] = df["phone2"].astype(str)
     
-    df.to_csv(os.path.join(OUTPUT_DIR, "customers.csv", ), index=False)
+    df.to_csv(os.path.join(OUTPUT_DIR, "customers.csv"), index=False)
     print(f"[OK] customers.csv generated with {len(df)} records.")
     return df
 
 # ==========================================
-# 3. ACCOUNTS GENERATION
+# 3. ACCOUNTS GENERATION & SLOT ALLOCATION
 # ==========================================
+def allocate_slot_and_emp(candidate_slots, eligible_emps, modality, enroll_date, cancel_date, schedule_tracker):
+    """
+    Finds a valid (slot_id, emp_id) pair respecting:
+    1. Exclusivity of modality per (emp_id, slot_id) across the entire schedule (or active window).
+    2. Max simultaneous capacity of 5 active students per (emp_id, slot_id).
+    """
+    eff_end = cancel_date if cancel_date is not None else END_DATE
+    slots = list(candidate_slots)
+    emps = list(eligible_emps)
+    random.shuffle(slots)
+    random.shuffle(emps)
+
+    for slot_id in slots:
+        for emp_id in emps:
+            allocations = schedule_tracker.get((emp_id, slot_id), [])
+            
+            # Rule 1: Do not mix 'presencial' and 'online' in the same (emp, slot)
+            if allocations and any(a["modality"] != modality for a in allocations):
+                continue
+                
+            # Filter allocations whose active window overlaps with [enroll_date, eff_end]
+            overlapping = [
+                a for a in allocations
+                if a["start"] <= eff_end and a["end"] >= enroll_date
+            ]
+            
+            # Rule 2: Max 5 simultaneous students for this employee in this slot
+            if len(overlapping) >= MAX_CAPACITY_PER_EMP_SLOT:
+                continue
+                
+            # Valid allocation found -> register in tracker
+            schedule_tracker.setdefault((emp_id, slot_id), []).append({
+                "start": enroll_date,
+                "end": eff_end,
+                "modality": modality
+            })
+            return slot_id, emp_id
+
+    raise RuntimeError(f"Capacity exhausted for modality='{modality}' in slots {list(candidate_slots)}")
+
+
 def generate_accounts(customers_df, employees_df):
     accounts = []
     next_kumon_id = 1001
+    schedule_tracker = {}  # Tracks (emp_id, slot_id) -> list of active allocations
     
     # Distribution of accounts per customer (1 to 4)
     customer_counts = np.random.choice([1, 2, 3, 4], size=len(customers_df), p=[0.65, 0.25, 0.07, 0.03])
@@ -172,12 +217,13 @@ def generate_accounts(customers_df, employees_df):
         for _ in range(n_accounts_for_cust):
             # Siblings vs. Multi-subject rule (~50% chance if a student already exists in the family)
             if family_students and random.random() < 0.50:
-                # Same student (same kumon_id, name, gender, birth_date)
+                # Same student (same kumon_id, name, gender, birth_date, modality)
                 student = random.choice(family_students)
                 kumon_id = student["kumon_id"]
                 account_name = student["account_name"]
                 gender = student["gender"]
                 birth_date = student["birth_date"]
+                modality = student["modality"]
             else:
                 # New student (different individual)
                 kumon_id = next_kumon_id
@@ -210,12 +256,21 @@ def generate_accounts(customers_df, employees_df):
                 birth_date = enroll_date_tmp - timedelta(days=int(age * 365.25))
                 if birth_date < datetime.strptime("1900-01-01", "%Y-%m-%d").date():
                     birth_date = datetime.strptime("1970-01-01", "%Y-%m-%d").date()
+
+                # Modality correlated with age (younger kids strongly 'presencial')
+                if age <= 6:
+                    modality = np.random.choice(["presencial", "online"], p=[0.95, 0.05])
+                elif age <= 12:
+                    modality = np.random.choice(["presencial", "online"], p=[0.85, 0.15])
+                else:
+                    modality = np.random.choice(["presencial", "online"], p=[0.70, 0.30])
                     
                 student = {
                     "kumon_id": kumon_id,
                     "account_name": account_name,
                     "gender": gender,
-                    "birth_date": birth_date
+                    "birth_date": birth_date,
+                    "modality": modality
                 }
                 family_students.append(student)
                 
@@ -251,21 +306,33 @@ def generate_accounts(customers_df, employees_df):
                 if min_cancel_date <= END_DATE:
                     max_days = (END_DATE - min_cancel_date).days
                     cancelation_date = min_cancel_date + timedelta(days=random.randint(0, max_days))
-                    
-            # Time Slots (4 days: Mon[1..10], Tue[11..20], Thu[21..30], Fri[31..40])
-            # Pick a valid pair: (Mon, Thu) -> Blocks 1 and 3, or (Tue, Fri) -> Blocks 2 and 4
-            pair_choice = random.choice(['seg_qui', 'ter_sex'])
-            if pair_choice == 'seg_qui':
-                slot_1 = random.randint(1, 10)
-                slot_2 = random.randint(21, 30)
+
+            # Study medium ('papel' vs 'tablet'): Japanese is 100% 'papel'
+            student_age_approx = (enroll_date - student["birth_date"]).days / 365.25
+            if subject_id == 'j':
+                study_medium = "papel"
+            elif student_age_approx <= 6:
+                study_medium = np.random.choice(["papel", "tablet"], p=[0.90, 0.10])
             else:
-                slot_1 = random.randint(11, 20)
-                slot_2 = random.randint(31, 40)
-                
+                study_medium = np.random.choice(["papel", "tablet"], p=[0.65, 0.35])
+
             # Selection of employees qualified for the subject
             eligible_emps = employees_df[employees_df[f"teaches_{subject_id}"] == True]["emp_id"].tolist()
-            emp_1 = random.choice(eligible_emps)
-            emp_2 = random.choice(eligible_emps) if len(eligible_emps) > 1 else emp_1
+
+            # Time Slots & Employee allocation (5 students per employee per slot, no modality mixing)
+            # Pick a valid pair: (Mon, Thu) -> Blocks [1..10] and [21..30], or (Tue, Fri) -> Blocks [11..20] and [31..40]
+            pair_choice = random.choice(['seg_qui', 'ter_sex'])
+            if pair_choice == 'seg_qui':
+                block_1, block_2 = range(1, 11), range(21, 31)
+            else:
+                block_1, block_2 = range(11, 21), range(31, 41)
+
+            slot_1, emp_1 = allocate_slot_and_emp(
+                block_1, eligible_emps, student["modality"], enroll_date, cancelation_date, schedule_tracker
+            )
+            slot_2, emp_2 = allocate_slot_and_emp(
+                block_2, eligible_emps, student["modality"], enroll_date, cancelation_date, schedule_tracker
+            )
             
             accounts.append({
                 "account_id": str(uuid.uuid4()),
@@ -275,6 +342,8 @@ def generate_accounts(customers_df, employees_df):
                 "birth_date": student["birth_date"],
                 "customer_id": customer_id,
                 "subject_id": subject_id,
+                "modality": student["modality"],
+                "study_medium": study_medium,
                 "enroll_stage_id": stage_id,
                 "enroll_date": enroll_date,
                 "cancelation_date": cancelation_date,
@@ -313,16 +382,29 @@ def audit_data(accounts_df):
     gen_pct = accounts_df['gender'].value_counts(normalize=True) * 100
     for gen, pct in gen_pct.items():
         print(f"   - Gender '{gen}': {pct:.1f}%")
-    
+        
     print("\n4. Churn Rate (Cancellations):")
     canceled_count = accounts_df['cancelation_date'].notna().sum()
     churn_rate = (canceled_count / len(accounts_df)) * 100
     print(f"   - Canceled accounts: {canceled_count} ({churn_rate:.1f}%)")
     
-    print("\n5. Average Occupancy per Time Slot (Workload):")
-    slot_counts = pd.concat([accounts_df['time_slot_1'], accounts_df['time_slot_2']]).value_counts()
-    print(f"   - Average students per weekly slot: {slot_counts.mean():.1f}")
-    print(f"   - Maximum peak in a single slot: {slot_counts.max()} students")
+    print("\n5. Modality & Study Medium Breakdown:")
+    for mod, pct in (accounts_df['modality'].value_counts(normalize=True) * 100).items():
+        print(f"   - Modality '{mod}': {pct:.1f}%")
+    for med, pct in (accounts_df['study_medium'].value_counts(normalize=True) * 100).items():
+        print(f"   - Medium '{med}': {pct:.1f}%")
+
+    print("\n6. Occupancy & Modality Exclusivity per (Employee, Time Slot):")
+    s1 = accounts_df[['emp_1', 'time_slot_1', 'modality']].rename(columns={'emp_1': 'emp_id', 'time_slot_1': 'slot_id'})
+    s2 = accounts_df[['emp_2', 'time_slot_2', 'modality']].rename(columns={'emp_2': 'emp_id', 'time_slot_2': 'slot_id'})
+    emp_slots = pd.concat([s1, s2])
+    
+    emp_slot_counts = emp_slots.groupby(['emp_id', 'slot_id']).size()
+    mixed_modalities = emp_slots.groupby(['emp_id', 'slot_id'])['modality'].nunique()
+    
+    print(f"   - Average students per (employee, slot): {emp_slot_counts.mean():.1f}")
+    print(f"   - Max total historical registrations in a single (employee, slot): {emp_slot_counts.max()}")
+    print(f"   - (Employee, slot) pairs mixing online & presencial: {(mixed_modalities > 1).sum()}")
     print("="*50 + "\n")
 
 # ==========================================
@@ -331,7 +413,7 @@ def audit_data(accounts_df):
 if __name__ == "__main__":
     print("Starting master synthetic data generation...")
     emp_df = generate_employees()
-    cust_df = generate_customers(n_customers=100)
+    cust_df = generate_customers(n_customers=250)
     acc_df = generate_accounts(cust_df, emp_df)
     audit_data(acc_df)
     print("Process completed successfully! Files saved in data/raw/")

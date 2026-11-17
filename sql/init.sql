@@ -2,7 +2,7 @@ CREATE SCHEMA master;
 CREATE SCHEMA transactional;
 
 -- ##################################################################################
--- Lookup Tables: time slots; stages ordering; payment methods; cost centers
+-- Lookup Tables: time slots; stages ordering; status; payment methods; cost centers
 -- ##################################################################################
 
 -- ##################################################################################
@@ -106,6 +106,25 @@ FROM unnest(ARRAY[
     '4A', '3A', '2A',
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'
 ]) WITH ORDINALITY AS t(stage_name, stage_order);
+
+-- ##################################################################################
+-- Create and populate the student status table
+-- ##################################################################################
+
+CREATE TABLE master.status (
+    status_id VARCHAR(2) PRIMARY KEY,
+    status_name TEXT NOT NULL UNIQUE,
+    description TEXT
+);
+
+INSERT INTO master.status (status_id, status_name, description) VALUES
+    ('N', 'Novo', 'Matrícula no mês de referência (primeira competência)'),
+    ('IT', 'Transferência Interna', 'Matrícula oriunda de transferência a partir de outra unidade'),
+    ('EO', 'Multi', 'Matrícula de aluno corrente em outra disciplina'),
+    ('C', 'Corrente', 'Matrícula ativa com frequência e entrega regular no mês'),
+    ('A', 'Ausente', 'Matrícula cancelada no mês de referência'),
+    ('OT', 'Transferência Externa', 'Matrícula cancelada por razão de transferência para outra unidade'),
+    ('CL', 'Concluinte', 'Matrícula encerrada por conclusão do estágio final da disciplina no mês anterior ao mês de referência');
 
 -- ##################################################################################
 -- Create and populate the payment methods table
@@ -231,6 +250,10 @@ CREATE TABLE master.accounts (
     enroll_date DATE NOT NULL CHECK (enroll_date <= CURRENT_DATE),
     cancellation_date DATE,
 
+    -- study modality
+    modality TEXT NOT NULL DEFAULT 'presencial' CHECK (modality IN ('presencial', 'online')),
+    study_medium TEXT NOT NULL DEFAULT 'papel' CHECK (study_medium IN ('papel', 'tablet')),
+
     -- interaction parameters
     time_slot_1 SMALLINT NOT NULL REFERENCES master.time_slots(time_slot_id),
     emp_1 UUID NOT NULL REFERENCES master.employees(emp_id),
@@ -335,6 +358,8 @@ CREATE TABLE transactional.monthly_performance (
         AND final_lesson_number % 10 = 0
     ),
     sheets_completed SMALLINT NOT NULL CHECK (sheets_completed >= 0),
+
+    status_id VARCHAR(2) NOT NULL DEFAULT 'C' REFERENCES master.status(status_id),
     
     -- Idempotency: one record per month
     CONSTRAINT uq_account_month UNIQUE (account_id, reference_month)
