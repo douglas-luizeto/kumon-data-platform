@@ -22,7 +22,7 @@ fake = Faker("pt_BR")
 Faker.seed(RANDOM_SEED)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = BASE_DIR / "data"
+OUTPUT_DIR = BASE_DIR / "data/raw"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Historical Window
