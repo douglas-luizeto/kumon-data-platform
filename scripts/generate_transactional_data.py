@@ -2,7 +2,7 @@
 Synthetic Data Generation Script for Transactional Tables (Kumon Unit)
 Reads master CSV files (employees, customers, accounts) and generates consistent
 transactional records for interactions, monthly_performance, financial_transactions,
-and tuition_fees respecting PostgreSQL schema constraints.
+and tuition_payments respecting PostgreSQL schema constraints.
 """
 
 from pathlib import Path
@@ -68,7 +68,7 @@ COST_CENTERS = {
     8: {"name": "Tarifas Bancárias", "flow_type": "OUT"},
 }
 
-BEHAVIOUR_TAGS_POOL = ["desmotivado", "pergunta demais", "indisciplinado"]
+BEHAVIOR_TAGS_POOL = ["desmotivado", "pergunta demais", "indisciplinado"]
 
 
 # ==========================================
@@ -102,13 +102,13 @@ def load_master_data():
 
     acc_df["birth_date"] = pd.to_datetime(acc_df["birth_date"]).dt.date
     acc_df["enroll_date"] = pd.to_datetime(acc_df["enroll_date"]).dt.date
-    acc_df["cancelation_date"] = pd.to_datetime(acc_df["cancelation_date"]).dt.date
+    acc_df["cancellation_date"] = pd.to_datetime(acc_df["cancellation_date"]).dt.date
 
-    acc_df["enroll_stage_id"] = acc_df["enroll_stage_id"].astype(int)
+    acc_df["initial_stage_id"] = acc_df["initial_stage_id"].astype(int)
     acc_df["time_slot_1"] = acc_df["time_slot_1"].astype(int)
     acc_df["time_slot_2"] = acc_df["time_slot_2"].astype(int)
     acc_df["due_day"] = acc_df["due_day"].astype(int)
-    acc_df["payment_method_id"] = acc_df["payment_method_id"].astype(int)
+    acc_df["default_payment_method_id"] = acc_df["default_payment_method_id"].astype(int)
     acc_df["monthly_fee"] = acc_df["monthly_fee"].astype(float)
 
     print(
@@ -134,7 +134,7 @@ def assign_behavioral_profiles(acc_df):
         acc_id = row["account_id"]
         gender = row["gender"]
         age = (row["enroll_date"] - row["birth_date"]).days / 365.25
-        is_canceled = pd.notna(row["cancelation_date"])
+        is_canceled = pd.notna(row["cancellation_date"])
 
         # Base weights: exemplar(25%), mediano(35%), esforcado_lento(15%), sem_dever(15%), faltoso_risco(10%)
         weights = np.array([0.25, 0.35, 0.15, 0.15, 0.10], dtype=float)
@@ -195,7 +195,7 @@ def format_pg_array(tags_list):
 
 
 def simulate_attendance_Attributes(eff_profile, study_medium, max_study_days):
-    """Samples attendance, homework days, quality, corrections, and behaviour tags."""
+    """Samples attendance, homework days, quality, did_corrections, and behavior tags."""
     profile_params = {
         "exemplar": {
             "att_prob": 0.95,
@@ -254,16 +254,16 @@ def simulate_attendance_Attributes(eff_profile, study_medium, max_study_days):
         days_studied = int(round(max_study_days * ratio))
         days_studied = max(0, min(days_studied, max_study_days))
 
-    # Corrections (higher probability on tablet)
+    # did_corrections (higher probability on tablet)
     corr_prob = min(0.98, p["corr_prob"] + (0.10 if study_medium == "tablet" else 0.0))
-    corrections = bool(random.random() < corr_prob)
+    did_corrections = bool(random.random() < corr_prob)
 
     study_quality = np.random.choice(["alta", "média", "baixa"], p=p["qual_weights"])
 
     tags = [tag for tag, prob in p["tag_probs"].items() if random.random() < prob]
     pg_tags = format_pg_array(tags)
 
-    return True, False, days_studied, corrections, study_quality, pg_tags
+    return True, False, days_studied, did_corrections, study_quality, pg_tags
 
 
 def generate_interactions(acc_df, profiles):
@@ -276,7 +276,7 @@ def generate_interactions(acc_df, profiles):
     for _, acc in acc_df.iterrows():
         acc_id = acc["account_id"]
         enroll_d = acc["enroll_date"]
-        cancel_d = acc["cancelation_date"]
+        cancel_d = acc["cancellation_date"]
         active_end = min(cancel_d, END_DATE) if pd.notna(cancel_d) else END_DATE
 
         slot_1 = int(acc["time_slot_1"])
@@ -392,9 +392,9 @@ def generate_interactions(acc_df, profiles):
                 "start_ts": start_ts_str,
                 "end_ts": end_ts_str,
                 "days_studied_since_last": days_studied,
-                "corrections": corr,
+                "did_corrections": corr,
                 "study_quality": qual,
-                "behaviour_tags": pg_tags,
+                "behavior_tags": pg_tags,
             })
 
             idx += 1
@@ -466,7 +466,7 @@ def generate_monthly_performance(acc_df, inter_df, profiles):
         kumon_id = acc["kumon_id"]
         subj = acc["subject_id"]
         enroll_d = acc["enroll_date"]
-        cancel_d = acc["cancelation_date"]
+        cancel_d = acc["cancellation_date"]
 
         enroll_month = date(enroll_d.year, enroll_d.month, 1)
         end_bound = min(cancel_d, END_DATE) if pd.notna(cancel_d) else END_DATE
@@ -474,7 +474,7 @@ def generate_monthly_performance(acc_df, inter_df, profiles):
         cancel_month = date(cancel_d.year, cancel_d.month, 1) if pd.notna(cancel_d) else None
 
         subj_stages = STAGE_MAP[subj]
-        curr_stage_idx = subj_stages.index(int(acc["enroll_stage_id"]))
+        curr_stage_idx = subj_stages.index(int(acc["initial_stage_id"]))
         curr_lesson = 10  # Starting lesson block
 
         curr_m = enroll_month
@@ -543,7 +543,7 @@ def generate_monthly_performance(acc_df, inter_df, profiles):
 
 
 # ==========================================
-# 5. FINANCIAL TRANSACTIONS & TUITION FEES
+# 5. FINANCIAL TRANSACTIONS & TUITION PAYMENTS
 # ==========================================
 def generate_financials(acc_df, emp_df):
     """
@@ -554,7 +554,7 @@ def generate_financials(acc_df, emp_df):
     tuition_records = []
 
     # Identify 15% of canceled accounts that exhibit silent churn (delinquent in last 1-2 months)
-    canceled_acc_ids = acc_df[acc_df["cancelation_date"].notna()]["account_id"].tolist()
+    canceled_acc_ids = acc_df[acc_df["cancellation_date"].notna()]["account_id"].tolist()
     silent_churn_ids = set(
         random.sample(canceled_acc_ids, k=max(1, int(round(len(canceled_acc_ids) * 0.15))))
     )
@@ -576,9 +576,9 @@ def generate_financials(acc_df, emp_df):
         for _, acc in acc_df.iterrows():
             acc_id = acc["account_id"]
             enroll_d = acc["enroll_date"]
-            cancel_d = acc["cancelation_date"]
+            cancel_d = acc["cancellation_date"]
             due_day = int(acc["due_day"])
-            pm_id = int(acc["payment_method_id"])
+            pm_id = int(acc["default_payment_method_id"])
             fee_amount = float(acc["monthly_fee"])
             subj = acc["subject_id"]
 
@@ -739,10 +739,10 @@ def generate_financials(acc_df, emp_df):
     tuition_df = pd.DataFrame(tuition_records)
 
     fin_df.to_csv(DATA_DIR / "financial_transactions.csv", index=False)
-    tuition_df.to_csv(DATA_DIR / "tuition_fees.csv", index=False)
+    tuition_df.to_csv(DATA_DIR / "tuition_payments.csv", index=False)
 
     print(f"[OK] financial_transactions.csv generated with {len(fin_df)} records.")
-    print(f"[OK] tuition_fees.csv generated with {len(tuition_df)} records.")
+    print(f"[OK] tuition_payments.csv generated with {len(tuition_df)} records.")
     return fin_df, tuition_df
 
 

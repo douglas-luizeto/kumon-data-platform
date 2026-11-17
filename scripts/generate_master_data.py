@@ -139,7 +139,7 @@ def generate_customers(n_customers=100):
                 "Fundos"
             ]) if random.random() < 0.4 else None,
             "district": fake.bairro(),
-            "zip_code": f"25{random.randint(10000, 99999)}",
+            "zip_code": f"25{random.randint(100000, 999999)}",
             "city": "Petrópolis",
             "state": "RJ",
             "country": "Brasil"
@@ -300,12 +300,12 @@ def generate_accounts(customers_df, employees_df):
                 student["birth_date"] = enroll_date - timedelta(days=365 * 6)
                 
             # Cancellation (30% to 35% of accounts)
-            cancelation_date = None
+            cancellation_date = None
             if random.random() < 0.32:
                 min_cancel_date = enroll_date + timedelta(days=30)
                 if min_cancel_date <= END_DATE:
                     max_days = (END_DATE - min_cancel_date).days
-                    cancelation_date = min_cancel_date + timedelta(days=random.randint(0, max_days))
+                    cancellation_date = min_cancel_date + timedelta(days=random.randint(0, max_days))
 
             # Study medium ('papel' vs 'tablet'): Japanese is 100% 'papel'
             student_age_approx = (enroll_date - student["birth_date"]).days / 365.25
@@ -328,10 +328,10 @@ def generate_accounts(customers_df, employees_df):
                 block_1, block_2 = range(11, 21), range(31, 41)
 
             slot_1, emp_1 = allocate_slot_and_emp(
-                block_1, eligible_emps, student["modality"], enroll_date, cancelation_date, schedule_tracker
+                block_1, eligible_emps, student["modality"], enroll_date, cancellation_date, schedule_tracker
             )
             slot_2, emp_2 = allocate_slot_and_emp(
-                block_2, eligible_emps, student["modality"], enroll_date, cancelation_date, schedule_tracker
+                block_2, eligible_emps, student["modality"], enroll_date, cancellation_date, schedule_tracker
             )
             
             accounts.append({
@@ -344,16 +344,16 @@ def generate_accounts(customers_df, employees_df):
                 "subject_id": subject_id,
                 "modality": student["modality"],
                 "study_medium": study_medium,
-                "enroll_stage_id": stage_id,
+                "initial_stage_id": stage_id,
                 "enroll_date": enroll_date,
-                "cancelation_date": cancelation_date,
+                "cancellation_date": cancellation_date,
                 "time_slot_1": slot_1,
                 "emp_1": emp_1,
                 "time_slot_2": slot_2,
                 "emp_2": emp_2,
                 "monthly_fee": 300.00,
                 "due_day": np.random.choice([5, 10], p=[0.70, 0.30]),
-                "payment_method_id": int(np.random.choice([1, 2, 3, 4], p=[0.20, 0.40, 0.35, 0.05]))
+                "default_payment_method_id": int(np.random.choice([1, 2, 3, 4], p=[0.20, 0.40, 0.35, 0.05]))
             })
             
     df = pd.DataFrame(accounts)
@@ -384,7 +384,7 @@ def audit_data(accounts_df):
         print(f"   - Gender '{gen}': {pct:.1f}%")
         
     print("\n4. Churn Rate (Cancellations):")
-    canceled_count = accounts_df['cancelation_date'].notna().sum()
+    canceled_count = accounts_df['cancellation_date'].notna().sum()
     churn_rate = (canceled_count / len(accounts_df)) * 100
     print(f"   - Canceled accounts: {canceled_count} ({churn_rate:.1f}%)")
     
