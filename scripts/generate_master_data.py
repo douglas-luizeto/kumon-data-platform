@@ -22,7 +22,7 @@ fake = Faker("pt_BR")
 Faker.seed(RANDOM_SEED)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = BASE_DIR / "data/raw"
+OUTPUT_DIR = BASE_DIR / "data"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Historical Window
@@ -416,4 +416,4 @@ if __name__ == "__main__":
     cust_df = generate_customers(n_customers=250)
     acc_df = generate_accounts(cust_df, emp_df)
     audit_data(acc_df)
-    print("Process completed successfully! Files saved in data/raw/")
+    print("Process completed successfully! Files saved in data")
