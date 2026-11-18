@@ -7,7 +7,7 @@ Este projeto visa implementar uma abordagem *data-driven* nos principais process
 3. **Relacionamento e Engajamento dos Alunos** Para construir essa estrutura do zero, substituir controles historicamente manuais e sistematizar dados que antes não eram analisados de forma integrada, o projeto foi estruturado nas seguintes etapas: 
 
 ---
-### 1.1 Armazenamento e Coleta dos Dados 
+## 1. Armazenamento e Coleta dos Dados 
 
 - **Modelagem Relacional (`master` e `transactional`):** Estruturação de um banco PostgreSQL separando entidades cadastrais de domínio/mestre (colaboradores, responsáveis financeiros, matrículas, horários, estágios e centros de custo) de registros transacionais de alta granularidade: 
 	-  Movimentações financeiras e liquidação de mensalidades 
@@ -18,7 +18,7 @@ Este projeto visa implementar uma abordagem *data-driven* nos principais process
 * **Interfaces de Coleta Operacional:** Criação de formulários e interfaces para registro ágil de observações comportamentais em sala e fechamento mensal de performance dos alunos. 
 
 --- 
-### 1.2 Geração de Dados Sintéticos (Fase 1: Entidades Mestre) 
+### 1.1 Geração de Dados Sintéticos (Fase 1: Entidades Mestre) 
 
 Para viabilizar testes locais reprodutíveis e modelagem realista de Business Intelligence sem expor dados sensíveis (LGPD), o projeto conta com um pipeline determinístico em Python (`scripts/generate_master_data.py`), construído com `Faker`, `NumPy` e `pandas`. 
 #### Estratégia de Geração e Regras de Negócio 
@@ -32,14 +32,14 @@ As entidades mestre são geradas em cascata estrita de dependências (`employees
 * **Capacidade Operacional e Churn:** Atribui pares de horários semanais em dias distintos (`Seg/Qui` ou `Ter/Sex`) respeitando o limite máximo de 5 alunos simultâneos por instrutor/horário e sem misturar atendimentos presenciais e online no mesmo bloco, além de simular uma taxa histórica de cancelamento de ~32% (`cancelation_date`). 
 #### Executando o Gerador de Dados Mestre 
 
-```
-bash python scripts/generate_master_data.py
+```bash 
+python scripts/generate_master_data.py
 ```
 
 O script executa uma auditoria automatizada de sanidade (validando proporções por disciplina, taxa de churn, exclusividade de modalidade e ocupação por instrutor/horário) antes de exportar os arquivos intermediários para `data/`.
 
 ---
-### 1.3 Geração de Dados Sintéticos (Fase 2: Entidades Transacionais)
+### 1.2 Geração de Dados Sintéticos (Fase 2: Entidades Transacionais)
 
 A segunda etapa do pipeline de dados (`scripts/generate_transactional_data.py`) consome as entidades mestre geradas anteriormente e simula 24 meses de operação diária e fechamentos mensais da unidade (`2024-07-01` a `2026-06-30`), preservando a integridade referencial e injetando correlações comportamentais e financeiras reais para análise.
 #### Estratégia de Simulação e Regras de Negócio
@@ -68,17 +68,15 @@ A segunda etapa do pipeline de dados (`scripts/generate_transactional_data.py`) 
         
 #### Executando o Gerador de Dados Transacionais
 
-Bash
 
-```
+```bash
 python scripts/generate_transactional_data.py
 ```
 
 Ao final da execução, o script roda uma bateria automatizada de auditoria que valida todas as chaves estrangeiras, a consistência entre estágios e disciplinas e exibe no terminal um resumo operacional acompanhado da DRE consolidada dos 24 meses antes de salvar os arquivos em `data/`
 
 ---
-
-### 1.4 Ingestão em Lote no PostgreSQL 
+### 1.3 Ingestão em Lote no PostgreSQL 
 
 Com os arquivos CSV mestres e transacionais gerados e auditados localmente, a etapa final da camada de armazenamento consiste em carregar os dados nos schemas `master` e `transactional` do banco PostgreSQL (`kumon_db`). 
 #### Arquitetura de Carga e Decisões Técnicas 
@@ -92,9 +90,42 @@ Para garantir alta performance, baixo consumo de memória e conformidade estrita
 
 Certifique-se de que o container `kumon_db` está ativo e execute: 
 
-```
-bash python scripts/load_to_postgres.py
+```bash 
+python scripts/load_to_postgres.py
 ```
 
 --- 
 
+---
+
+## 2. Replicação e Sincronização com o Data Warehouse (`BigQuery`)
+
+Para isolar o banco transacional local (`PostgreSQL` - OLTP) da carga analítica pesada (OLAP), os dados das 13 tabelas dos schemas `master` e `transactional` são replicados para o dataset `raw_postgres` no **Google BigQuery** através do conector customizado `pipelines/ingestion/sync_to_bigquery.py`.
+
+### 2.1 Arquitetura do Conector (`Staging + MERGE`)
+
+O pipeline de replicação foi desenhado sob os princípios de **idempotência**, **preservação estrita de tipos** e **baixo custo computacional**:
+
+* **Serialização Colunar em Memória (`PyArrow` / `Parquet`):** Em vez de trafegar arquivos CSV/JSON (sujeitos a erros de *parsing*, perda de precisão decimal e problemas com arrays), os registros extraídos via `psycopg` são normalizados e convertidos em memória (`io.BytesIO`) para o formato binário **Apache Parquet** com compressão `SNAPPY` e schema explícito (`decimal128` para valores monetários e `list<string>` para arrays como `behavior_tags`).
+* **Estratégia Híbrida de Carga (`Full` vs. `Incremental`):**
+  * **Tabelas de Catálogo e Cadastro (`master.*`):** Sincronizadas em modo `FULL_REPLACE` (`WRITE_TRUNCATE`) devido à baixa volumetria e necessidade de espelhamento imediato.
+  * **Tabelas de Fatos e Eventos (`transactional.*`):** Sincronizadas em modo `INCREMENTAL_MERGE`. Na primeira execução (ou quando acionada a flag `--full-refresh`), o script realiza a carga histórica completa (`INITIAL_CREATE`). Nas execuções subsequentes, extrai apenas uma janela móvel retroativa (*lookback window*) baseada na coluna de data da tabela (`expected_date`, `transaction_date`, `reference_month`).
+* **Padrão `Staging + MERGE`:** O lote em Parquet é carregado inicialmente em uma tabela temporária (`_stg_<tabela>`) via *Batch Load Job* (operação gratuita no BigQuery). Em seguida, uma instrução `MERGE` atualiza registros modificados (`WHEN MATCHED`) e insere novos registros (`WHEN NOT MATCHED`) usando a chave primária, removendo a tabela temporária ao final dentro de um bloco `try...finally`.
+
+### 2.2 Interface de Linha de Comando (CLI) e Execução
+
+O script possui interface CLI via `argparse`, permitindo tanto a carga histórica completa quanto execuções granulares por tabela:
+
+```bash
+# 1. Carga histórica completa (todas as 13 tabelas)
+python pipelines/ingestion/sync_to_bigquery.py --full-refresh
+
+# 2. Sincronização incremental de interações de aula (janela de 3 dias)
+python pipelines/ingestion/sync_to_bigquery.py --tables interactions --lookback-days 3
+
+# 3. Sincronização incremental financeira (janela padrão de 5 dias)
+python pipelines/ingestion/sync_to_bigquery.py --tables financial_transactions tuition_payments
+
+# 4. Sincronização do fechamento mensal de performance
+python pipelines/ingestion/sync_to_bigquery.py --tables monthly_performance
+```
