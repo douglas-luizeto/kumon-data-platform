@@ -12,7 +12,7 @@ import psycopg
 # ==========================================
 # PATHS & DATABASE CONFIGURATION
 # ==========================================
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 
 
@@ -29,7 +29,7 @@ def load_dotenv_file(env_path: Path):
             os.environ.setdefault(key.strip(), val.strip().strip("'\""))
 
 
-load_dotenv_file(BASE_DIR / ".env")
+load_dotenv_file(BASE_DIR / "infra/.env")
 
 DB_CONFIG = {
     "host": os.environ.get("POSTGRES_HOST", "localhost"),

@@ -21,7 +21,7 @@ np.random.seed(RANDOM_SEED)
 fake = Faker("pt_BR")
 Faker.seed(RANDOM_SEED)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR = BASE_DIR / "data"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

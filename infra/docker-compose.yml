@@ -8,8 +8,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./pgdata:/var/lib/postgresql
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../pgdata:/var/lib/postgresql
+      - ../sql/init.sql:/docker-entrypoint-initdb.d/init.sql
 
   pgadmin:
     image: dpage/pgadmin4
