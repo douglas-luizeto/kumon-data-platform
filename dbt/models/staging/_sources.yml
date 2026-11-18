@@ -1,0 +1,132 @@
+version: 2
+
+sources:
+  - name: raw_postgres
+    schema: raw_postgres
+    description: "Raw replica of the Kumon unit PostgreSQL transactional database (master and transactional schemas)."
+    tables:
+      # ------------------------------------------------------------------------
+      # Master Catalog / Lookup Tables (6)
+      # ------------------------------------------------------------------------
+      - name: time_slots
+        description: "Available class schedule slots across operational weekdays (Mon, Tue, Thu, Fri)."
+        columns:
+          - name: time_slot_id
+            description: "Primary key for the time slot."
+            tests:
+              - unique
+              - not_null
+
+      - name: subjects
+        description: "Catalog of subjects offered by the Kumon unit (Math, Portuguese, English, Japanese)."
+        columns:
+          - name: subject_id
+            description: "Single-character primary key ('m', 'p', 'i', 'j')."
+            tests:
+              - unique
+              - not_null
+
+      - name: stages
+        description: "Ordered curriculum stages per subject."
+        columns:
+          - name: stage_id
+            description: "Surrogate primary key for the curriculum stage."
+            tests:
+              - unique
+              - not_null
+
+      - name: status
+        description: "Student monthly enrollment status codes (N, IT, EO, C, A, OT, CL)."
+        columns:
+          - name: status_id
+            description: "Status code primary key."
+            tests:
+              - unique
+              - not_null
+
+      - name: payment_methods
+        description: "Supported payment methods, settlement days (D+N), and transaction fees."
+        columns:
+          - name: payment_method_id
+            description: "Primary key for the payment method."
+            tests:
+              - unique
+              - not_null
+
+      - name: cost_centers
+        description: "Financial chart of accounts classifying inflows (IN) and outflows (OUT) by cost nature."
+        columns:
+          - name: cost_center_id
+            description: "Primary key for the cost center."
+            tests:
+              - unique
+              - not_null
+
+      # ------------------------------------------------------------------------
+      # Master Core Entities (3)
+      # ------------------------------------------------------------------------
+      - name: employees
+        description: "Unit staff members (instructor and teaching assistants) and subject qualifications."
+        columns:
+          - name: emp_id
+            description: "UUID primary key for the employee."
+            tests:
+              - unique
+              - not_null
+
+      - name: customers
+        description: "Financial guardians (parents or adult students) responsible for tuition payments."
+        columns:
+          - name: customer_id
+            description: "UUID primary key for the financial guardian."
+            tests:
+              - unique
+              - not_null
+
+      - name: accounts
+        description: "Individual subject enrollments linking a physical student (kumon_id) to a specific subject."
+        columns:
+          - name: account_id
+            description: "UUID primary key for the subject enrollment."
+            tests:
+              - unique
+              - not_null
+
+      # ------------------------------------------------------------------------
+      # Transactional Tables (4)
+      # ------------------------------------------------------------------------
+      - name: interactions
+        description: "Class attendance logs, rescheduling chains, home study frequency, and behavioral tags."
+        columns:
+          - name: interaction_id
+            description: "UUID primary key for the scheduled class interaction."
+            tests:
+              - unique
+              - not_null
+
+      - name: monthly_performance
+        description: "Monthly closing snapshots (day 26) recording student stage progression and worksheet volume."
+        columns:
+          - name: performance_id
+            description: "Primary key for the monthly performance snapshot."
+            tests:
+              - unique
+              - not_null
+
+      - name: financial_transactions
+        description: "General financial ledger capturing all settled revenues and expenses (accrual and cash dates)."
+        columns:
+          - name: transaction_id
+            description: "UUID primary key for the settled financial transaction."
+            tests:
+              - unique
+              - not_null
+
+      - name: tuition_payments
+        description: "1:1 subtype extension of financial_transactions detailing customer tuition payment metadata."
+        columns:
+          - name: transaction_id
+            description: "UUID primary key and foreign key referencing financial_transactions."
+            tests:
+              - unique
+              - not_null
