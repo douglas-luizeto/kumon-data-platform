@@ -20,7 +20,10 @@ renamed as (
         cast(days_studied_since_last as int64) as days_studied_since_last,
         cast(did_corrections as bool) as did_corrections,
         trim(study_quality) as study_quality,
-        behavior_tags
+        array(
+            select trim(tag)
+            from unnest(behavior_tags) as tag
+        ) as behavior_tags
 
     from source
 
