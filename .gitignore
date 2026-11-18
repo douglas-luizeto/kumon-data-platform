@@ -1,7 +1,7 @@
-.env
+*.env
 
 /.gcp/
-
 /pgdata/
 /venv/
 /data/
+/experiments
