@@ -32,8 +32,8 @@ As entidades mestre são geradas em cascata estrita de dependências (`employees
 * **Capacidade Operacional e Churn:** Atribui pares de horários semanais em dias distintos (`Seg/Qui` ou `Ter/Sex`) respeitando o limite máximo de 5 alunos simultâneos por instrutor/horário e sem misturar atendimentos presenciais e online no mesmo bloco, além de simular uma taxa histórica de cancelamento de ~32% (`cancelation_date`). 
 #### Executando o Gerador de Dados Mestre 
 
-```bash 
-python scripts/generate_master_data.py
+```
+bash python scripts/generate_master_data.py
 ```
 
 O script executa uma auditoria automatizada de sanidade (validando proporções por disciplina, taxa de churn, exclusividade de modalidade e ocupação por instrutor/horário) antes de exportar os arquivos intermediários para `data/`.
@@ -68,8 +68,9 @@ A segunda etapa do pipeline de dados (`scripts/generate_transactional_data.py`) 
         
 #### Executando o Gerador de Dados Transacionais
 
+Bash
 
-```bash
+```
 python scripts/generate_transactional_data.py
 ```
 
@@ -95,8 +96,6 @@ python scripts/load_to_postgres.py
 ```
 
 --- 
-
----
 
 ## 2. Replicação e Sincronização com o Data Warehouse (`BigQuery`)
 
@@ -128,4 +127,42 @@ python pipelines/ingestion/sync_to_bigquery.py --tables financial_transactions t
 
 # 4. Sincronização do fechamento mensal de performance
 python pipelines/ingestion/sync_to_bigquery.py --tables monthly_performance
+```
+
+---
+## 3. Transformação e Qualidade de Dados (`dbt` + `BigQuery`)
+
+Com as tabelas brutas replicadas no dataset `raw_postgres`, toda a modelagem analítica, rastreamento de linhagem (*data lineage*) e validação de contratos de dados são orquestrados pelo **dbt** (*data build tool*) seguindo a **Arquitetura Medalhão** (`Staging` $\rightarrow$ `Intermediate` $\rightarrow$ `Marts`), com isolamento estrito entre os ambientes de desenvolvimento (`analytics_dev`) e produção (`analytics_prod`).
+
+### 3.1 Camada Staging (`dbt/models/staging/`)
+
+A camada *Staging* atua como fronteira de **desacoplamento e higienização** (*anti-corruption layer*) entre o modelo relacional do PostgreSQL e o Data Warehouse. Cada uma das 13 tabelas de origem possui um mapeamento estrito **1:1** (`stg_kumon__<entidade>.sql`), garantindo que as camadas superiores nunca consultem `raw_postgres` diretamente.
+
+Principais decisões de engenharia aplicadas nesta camada:
+
+- **Estratégia de Materialização (`view`):** Todos os modelos de *staging* são materializados como `views` no BigQuery. Como esta camada aplica apenas transformações escalares leves (sem `JOIN`s pesados ou agregações), o uso de *views* elimina custos de armazenamento duplicado e garante latência zero em relação à última carga do `raw_postgres`.
+- **Tipagem Determinística e Higienização (`CAST` e `TRIM`):**
+  - Atributos monetários e taxas (`salary`, `monthly_fee`, `amount`, `fee_fixed`, `fee_pct`) recebem `CAST(... AS NUMERIC)` explícito (precisão decimal exata de 38 dígitos), eliminando erros de arredondamento de ponto flutuante (`FLOAT64`) em batimentos contábeis de DRE e Fluxo de Caixa.
+  - Campos textuais passam por limpeza com `TRIM()`, incluindo o saneamento *in-place* de arrays (`ARRAY(SELECT TRIM(tag) FROM UNNEST(behavior_tags) AS tag)`), que higieniza os elementos da lista sem explodir a granularidade original da tabela (`1 linha por interaction_id`).
+- **Padronização Semântica e Flags Pré-Computadas:** Chaves estrangeiras com nomenclatura legada são padronizadas (`emp_1` $\rightarrow$ `employee_1_id`, `time_slot_1` $\rightarrow$ `time_slot_1_id`), e flags booleanas de estado (`is_active`, `is_canceled`, `is_present`, `is_rescheduled`, `is_inflow`) são derivadas na base para evitar a repetição de blocos `CASE WHEN ... IS NULL` nas camadas superiores e nas medidas DAX do Power BI.
+
+### 3.2 Testes Automatizados e Quarentena de Anomalias (`store_failures`)
+
+A qualidade dos dados é tratada como código e validada a cada execução do `dbt build`, combinando **161 asserções genéricas de schema** (`_sources.yml` e `_stg_kumon__models.yml`) com **5 testes singulares de integridade de negócio entre múltiplas tabelas** (`dbt/tests/*.sql`):
+
+- **Integridade de Origem e Schema (Testes Genéricos):** Validação automatizada de unicidade e não-nulidade de chaves primárias (`unique`, `not_null`), integridade referencial de todas as chaves estrangeiras (`relationships`) e restrições de domínio (`accepted_values` com validação estrita de tipos numéricos e strings).
+- **Regras de Negócio Cross-Table (Testes Singulares):** Queries SQL customizadas que auditam invariantes operacionais e temporais entre tabelas distintas (regras que o banco transacional não consegue impor via `CHECK` constraints simples):
+  - `assert_interactions_after_enroll_date`: Garante que nenhuma aula ou interação (`expected_date`) seja agendada em data anterior à matrícula do aluno (`enroll_date`).
+  - `assert_employee_is_active`: Verifica se os instrutores/auxiliares alocados ao aluno possuíam contrato de trabalho vigente (`expected_date` compreendida entre `contract_start` e `contract_end`) na data de cada aula.
+  - `assert_employee_qualified_for_subject`: Audita se os colaboradores alocados em `employee_1_id` e `employee_2_id` possuem a flag booleana de habilitação (`teaches_m`, `teaches_p`, `teaches_i`, `teaches_j`) correspondente à disciplina da matrícula (`subject_id`).
+  - `assert_tuition_payments_are_inflows`: Garante que todo registro de pagamento de mensalidade em `tuition_payments` esteja vinculado, no razão financeiro (`financial_transactions` + `cost_centers`), a um centro de custo classificado como entrada de receita (`flow_type = 'IN'`).
+  - `assert_performance_stage_matches_account_subject`: Valida que o estágio curricular registrado no fechamento mensal (`final_stage_id`) pertence à mesma disciplina (`subject_id`) do contrato da matrícula.
+- **Quarentena Automatizada de Auditoria (`+store_failures: true`):** Configurada globalmente no `dbt_project.yml` (`+schema: audit_failures`), faz com que o dbt interrompa a propagação de dados corrompidos para as *Marts* em caso de falha e persista automaticamente as linhas infratoras (com todas as colunas de contexto) em tabelas físicas no dataset de auditoria (`*_audit_failures`) no BigQuery para inspeção e correção humana.
+
+#### Executando e Validando a Camada Staging
+
+No terminal do dbt Cloud IDE (ou via dbt Cloud CLI):
+
+```bash
+dbt build --select staging
 ```
