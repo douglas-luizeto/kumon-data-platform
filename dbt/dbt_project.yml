@@ -23,3 +23,8 @@ models:
       +materialized: ephemeral
     marts:
       +materialized: table
+
+tests:
+  kumon_analytics:
+    +store_failures: true
+    +schema: audit_failures

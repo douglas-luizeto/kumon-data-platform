@@ -1,0 +1,522 @@
+version: 2
+
+models:
+  # --------------------------------------------------------------------------
+  # 1. Staging Catalog / Lookup Models
+  # --------------------------------------------------------------------------
+  - name: stg_kumon__time_slots
+    description: "Cleaned time slot catalog for operational weekdays (Mon, Tue, Thu, Fri)."
+    columns:
+      - name: time_slot_id
+        description: "Primary key for the time slot."
+        tests:
+          - unique
+          - not_null
+      - name: day_of_week
+        description: "ISO day of the week (1=Mon, 2=Tue, 4=Thu, 5=Fri)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 4, 5]
+                quote: false
+      - name: slot_time
+        description: "Start time of the 1-hour class slot."
+        tests:
+          - not_null
+      - name: max_capacity
+        description: "Maximum simultaneous student capacity per instructor in the slot."
+        tests:
+          - not_null
+
+  - name: stg_kumon__subjects
+    description: "Catalog of subjects offered by the Kumon franchise unit."
+    columns:
+      - name: subject_id
+        description: "Single-character primary key for the subject."
+        tests:
+          - unique
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['m', 'p', 'i', 'j']
+      - name: subject_name
+        description: "Full display name of the subject."
+        tests:
+          - unique
+          - not_null
+
+  - name: stg_kumon__stages
+    description: "Curriculum stages ordered sequentially within each subject."
+    columns:
+      - name: stage_id
+        description: "Primary key for the curriculum stage."
+        tests:
+          - unique
+          - not_null
+      - name: subject_id
+        description: "Foreign key referencing stg_kumon__subjects."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__subjects')
+                field: subject_id
+      - name: stage_name
+        description: "Alphanumeric stage code (e.g., 6A, A, AI, O)."
+        tests:
+          - not_null
+      - name: stage_order
+        description: "Sequential order of the stage within its subject curriculum."
+        tests:
+          - not_null
+
+  - name: stg_kumon__status
+    description: "Monthly student status classifications."
+    columns:
+      - name: status_id
+        description: "Status code primary key."
+        tests:
+          - unique
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['N', 'IT', 'EO', 'C', 'A', 'OT', 'CL']
+      - name: status_name
+        description: "Display name of the enrollment status."
+        tests:
+          - unique
+          - not_null
+      - name: description
+        description: "Operational definition of the status code."
+
+  - name: stg_kumon__payment_methods
+    description: "Payment methods, settlement lag days, and banking fee structures."
+    columns:
+      - name: payment_method_id
+        description: "Primary key for the payment method."
+        tests:
+          - unique
+          - not_null
+      - name: method_name
+        description: "Name of the payment method (Boleto, Boleto-Pix, Pix, Dinheiro)."
+        tests:
+          - unique
+          - not_null
+      - name: settlement_days
+        description: "Number of days between payment and cash settlement (D+N)."
+        tests:
+          - not_null
+      - name: fee_fixed
+        description: "Fixed transaction fee in BRL."
+        tests:
+          - not_null
+      - name: fee_pct
+        description: "Percentage transaction fee."
+        tests:
+          - not_null
+
+  - name: stg_kumon__cost_centers
+    description: "Chart of accounts categorizing financial inflows and outflows."
+    columns:
+      - name: cost_center_id
+        description: "Primary key for the cost center."
+        tests:
+          - unique
+          - not_null
+      - name: cost_center_name
+        description: "Unique name of the cost center category."
+        tests:
+          - unique
+          - not_null
+      - name: flow_type
+        description: "Cash flow direction ('IN' for revenue, 'OUT' for expense)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['IN', 'OUT']
+      - name: is_inflow
+        description: "Boolean flag equal to TRUE when flow_type = 'IN'."
+        tests:
+          - not_null
+      - name: cost_nature
+        description: "Expense nature classification (NULL for revenue inflows)."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Fixed', 'Variable', 'Tax', 'Financial']
+      - name: description
+        description: "Detailed explanation of items booked under this cost center."
+
+  # --------------------------------------------------------------------------
+  # 2. Staging Master Entity Models
+  # --------------------------------------------------------------------------
+  - name: stg_kumon__employees
+    description: "Unit employees, subject teaching qualifications, and contract dates."
+    columns:
+      - name: emp_id
+        description: "UUID primary key for the employee."
+        tests:
+          - unique
+          - not_null
+      - name: emp_name
+        description: "Full name of the employee."
+        tests:
+          - not_null
+      - name: employee_type
+        description: "Role classification (e.g., Orientador, Auxiliar)."
+        tests:
+          - not_null
+      - name: teaches_m
+        description: "Boolean flag indicating qualification to teach Mathematics."
+        tests:
+          - not_null
+      - name: teaches_p
+        description: "Boolean flag indicating qualification to teach Portuguese."
+        tests:
+          - not_null
+      - name: teaches_i
+        description: "Boolean flag indicating qualification to teach English."
+        tests:
+          - not_null
+      - name: teaches_j
+        description: "Boolean flag indicating qualification to teach Japanese."
+        tests:
+          - not_null
+      - name: phone1
+        description: "Primary contact phone number."
+        tests:
+          - not_null
+      - name: phone2
+        description: "Secondary contact phone number."
+      - name: email
+        description: "Employee email address."
+      - name: salary
+        description: "Monthly base salary in BRL."
+        tests:
+          - not_null
+      - name: contract_start
+        description: "Employment contract start date."
+        tests:
+          - not_null
+      - name: contract_end
+        description: "Employment contract termination date (NULL if currently active)."
+      - name: is_active
+        description: "Boolean flag equal to TRUE when contract_end is NULL."
+        tests:
+          - not_null
+
+  - name: stg_kumon__customers
+    description: "Financial guardians responsible for student enrollments and tuition payments."
+    columns:
+      - name: customer_id
+        description: "UUID primary key for the customer."
+        tests:
+          - unique
+          - not_null
+      - name: cpf
+        description: "11-digit Brazilian individual taxpayer registry number."
+        tests:
+          - unique
+      - name: customer_name
+        description: "Full name of the financial guardian."
+        tests:
+          - not_null
+      - name: email
+        description: "Contact email address."
+      - name: phone1
+        description: "Primary phone number."
+        tests:
+          - not_null
+      - name: phone2
+        description: "Secondary phone number."
+
+  - name: stg_kumon__accounts
+    description: "Subject enrollments linking a student (kumon_id) to a specific subject contract."
+    columns:
+      - name: account_id
+        description: "UUID primary key for the subject enrollment."
+        tests:
+          - unique
+          - not_null
+      - name: kumon_id
+        description: "Identifier grouping multiple subject enrollments belonging to the same physical student."
+        tests:
+          - not_null
+      - name: account_name
+        description: "Full name of the enrolled student."
+        tests:
+          - not_null
+      - name: birth_date
+        description: "Student date of birth."
+        tests:
+          - not_null
+      - name: gender
+        description: "Student gender ('M' or 'F')."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['M', 'F']
+      - name: customer_id
+        description: "Foreign key referencing the financial guardian in stg_kumon__customers."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__customers')
+                field: customer_id
+      - name: subject_id
+        description: "Foreign key referencing the enrolled subject in stg_kumon__subjects."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__subjects')
+                field: subject_id
+      - name: initial_stage_id
+        description: "Foreign key referencing the initial diagnostic curriculum stage in stg_kumon__stages."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__stages')
+                field: stage_id
+      - name: enroll_date
+        description: "Enrollment start date."
+        tests:
+          - not_null
+      - name: cancellation_date
+        description: "Enrollment cancellation or graduation date (NULL if active)."
+      - name: is_canceled
+        description: "Boolean flag equal to TRUE when cancellation_date is not NULL."
+        tests:
+          - not_null
+      - name: modality
+        description: "Class attendance modality ('presencial' or 'online')."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['presencial', 'online']
+      - name: study_medium
+        description: "Worksheet study medium ('papel' or 'tablet')."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['papel', 'tablet']
+      - name: time_slot_1_id
+        description: "Primary weekly class time slot."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__time_slots')
+                field: time_slot_id
+      - name: employee_1_id
+        description: "Instructor/assistant assigned to the primary weekly class slot."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__employees')
+                field: emp_id
+      - name: time_slot_2_id
+        description: "Secondary weekly class time slot."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__time_slots')
+                field: time_slot_id
+      - name: employee_2_id
+        description: "Instructor/assistant assigned to the secondary weekly class slot."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__employees')
+                field: emp_id
+      - name: monthly_fee
+        description: "Contracted monthly tuition fee in BRL."
+        tests:
+          - not_null
+      - name: due_day
+        description: "Contracted day of the month for tuition due date."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [5, 10, 15, 20, 25, 30]
+                quote: false
+      - name: default_payment_method_id
+        description: "Default payment method selected by the customer."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__payment_methods')
+                field: payment_method_id
+
+  # --------------------------------------------------------------------------
+  # 3. Staging Transactional Models
+  # --------------------------------------------------------------------------
+  - name: stg_kumon__interactions
+    description: "Scheduled class interactions, attendance timestamps, home study logs, and behavioral tags."
+    columns:
+      - name: interaction_id
+        description: "UUID primary key for the class interaction."
+        tests:
+          - unique
+          - not_null
+      - name: account_id
+        description: "Foreign key referencing stg_kumon__accounts."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__accounts')
+                field: account_id
+      - name: expected_date
+        description: "Scheduled date for the class session."
+        tests:
+          - not_null
+      - name: expected_time_slot_id
+        description: "Scheduled time slot for the class session."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__time_slots')
+                field: time_slot_id
+      - name: rescheduled_from_id
+        description: "Self-referencing foreign key pointing to the original missed interaction."
+      - name: is_rescheduled
+        description: "Boolean flag equal to TRUE when the session is a makeup class."
+        tests:
+          - not_null
+      - name: is_justified_absence
+        description: "Boolean flag indicating whether an absence was communicated and justified."
+        tests:
+          - not_null
+      - name: is_present
+        description: "Boolean flag equal to TRUE when start_ts is not NULL."
+        tests:
+          - not_null
+      - name: study_quality
+        description: "Qualitative assessment of the student class session ('baixa', 'média', 'alta')."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['baixa', 'média', 'alta']
+
+  - name: stg_kumon__monthly_performance
+    description: "Monthly closing snapshots of student curriculum progression and worksheet completion."
+    columns:
+      - name: performance_id
+        description: "Primary key for the monthly performance record."
+        tests:
+          - unique
+          - not_null
+      - name: account_id
+        description: "Foreign key referencing stg_kumon__accounts."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__accounts')
+                field: account_id
+      - name: reference_month
+        description: "First day of the reference competence month."
+        tests:
+          - not_null
+      - name: final_stage_id
+        description: "Curriculum stage reached by the end of the reference month."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__stages')
+                field: stage_id
+      - name: final_lesson_number
+        description: "Worksheet lesson block (10 to 200, in multiples of 10) reached at month close."
+        tests:
+          - not_null
+      - name: sheets_completed
+        description: "Total worksheets completed during the reference month."
+        tests:
+          - not_null
+      - name: status_id
+        description: "Student monthly enrollment status code at month close."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__status')
+                field: status_id
+
+  - name: stg_kumon__financial_transactions
+    description: "General financial ledger recording all settled unit revenues and expenses."
+    columns:
+      - name: transaction_id
+        description: "UUID primary key for the financial transaction."
+        tests:
+          - unique
+          - not_null
+      - name: cost_center_id
+        description: "Foreign key referencing stg_kumon__cost_centers."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__cost_centers')
+                field: cost_center_id
+      - name: payment_method_id
+        description: "Foreign key referencing stg_kumon__payment_methods."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__payment_methods')
+                field: payment_method_id
+      - name: competence_date
+        description: "Accrual accounting date (DRE competence)."
+        tests:
+          - not_null
+      - name: transaction_date
+        description: "Cash settlement date (Cash Flow)."
+        tests:
+          - not_null
+      - name: amount
+        description: "Positive transaction amount in BRL."
+        tests:
+          - not_null
+
+  - name: stg_kumon__tuition_payments
+    description: "Tuition payment metadata linked 1:1 to settled financial transactions."
+    columns:
+      - name: transaction_id
+        description: "UUID primary key and foreign key referencing stg_kumon__financial_transactions."
+        tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__financial_transactions')
+                field: transaction_id
+      - name: customer_id
+        description: "Foreign key referencing the paying guardian in stg_kumon__customers."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__customers')
+                field: customer_id
+      - name: reference_month
+        description: "First day of the tuition competence month."
+        tests:
+          - not_null
+      - name: due_date
+        description: "Original invoice due date."
+        tests:
+          - not_null
