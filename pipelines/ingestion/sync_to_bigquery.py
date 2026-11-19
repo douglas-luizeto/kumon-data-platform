@@ -208,6 +208,7 @@ TABLE_MANIFEST: Dict[str, TableConfig] = {
             bigquery.SchemaField("initial_stage_id", "INT64", mode="REQUIRED"),
             bigquery.SchemaField("enroll_date", "DATE", mode="REQUIRED"),
             bigquery.SchemaField("cancellation_date", "DATE", mode="NULLABLE"),
+            bigquery.SchemaField("declared_churn_reason", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("modality", "STRING", mode="REQUIRED"),
             bigquery.SchemaField("study_medium", "STRING", mode="REQUIRED"),
             bigquery.SchemaField("time_slot_1", "INT64", mode="REQUIRED"),

@@ -249,6 +249,7 @@ CREATE TABLE master.accounts (
     -- account status    
     enroll_date DATE NOT NULL CHECK (enroll_date <= CURRENT_DATE),
     cancellation_date DATE,
+    declared_churn_reason VARCHAR(50) NULL, 
 
     -- study modality
     modality TEXT NOT NULL DEFAULT 'presencial' CHECK (modality IN ('presencial', 'online')),
@@ -269,6 +270,7 @@ CREATE TABLE master.accounts (
     CONSTRAINT uq_kumon_id_subject_id UNIQUE (kumon_id, subject_id),
     CONSTRAINT chk_enroll_after_birth CHECK (enroll_date > birth_date),
     CONSTRAINT chk_cancel_after_enroll CHECK (cancellation_date >= enroll_date),
+    CONSTRAINT chk_churn_reason_cancellation_date CHECK ((declared_churn_reason IS NULL) = (cancellation_date IS NULL)),
     CONSTRAINT chk_different_time_slots CHECK (time_slot_1 != time_slot_2),
     CONSTRAINT chk_emp2_time_slot2 CHECK ((time_slot_2 IS NULL) = (emp_2 IS NULL)),
     CONSTRAINT fk_account_subject_stage 
