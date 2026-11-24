@@ -293,6 +293,18 @@ models:
         description: "Boolean flag equal to TRUE when cancellation_date is not NULL."
         tests:
           - not_null
+      - name: declared_churn_reason
+        description: "Churn reason declared by the guardian during the exit interview (NULL for active accounts)."
+        tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - 'Objetivo atingido'
+                  - 'Falta de tempo'
+                  - 'Financeiro'
+                  - 'Desmotivação/Dificuldade'
+                  - 'Mudança de cidade/escola'
+                  - 'Outros'
       - name: modality
         description: "Class attendance modality ('presencial' or 'online')."
         tests:

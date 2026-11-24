@@ -18,6 +18,7 @@ renamed as (
         cast(enroll_date as date) as enroll_date,
         cast(cancellation_date as date) as cancellation_date,
         cancellation_date is not null as is_canceled,
+        trim(declared_churn_reason) as declared_churn_reason,
         trim(modality) as modality,
         trim(study_medium) as study_medium,
         cast(time_slot_1 as int64) as time_slot_1_id,
