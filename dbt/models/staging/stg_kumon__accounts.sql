@@ -18,15 +18,14 @@ renamed as (
         cast(enroll_date as date) as enroll_date,
         cast(cancellation_date as date) as cancellation_date,
         cancellation_date is not null as is_canceled,
+        trim(declared_churn_reason) as declared_churn_reason,
         trim(modality) as modality,
         trim(study_medium) as study_medium,
         cast(time_slot_1 as int64) as time_slot_1_id,
         trim(emp_1) as employee_1_id,
         cast(time_slot_2 as int64) as time_slot_2_id,
         trim(emp_2) as employee_2_id,
-        cast(monthly_fee as numeric) as monthly_fee,
-        cast(due_day as int64) as due_day,
-        cast(default_payment_method_id as int64) as default_payment_method_id
+        cast(monthly_fee as numeric) as monthly_fee
 
     from source
 

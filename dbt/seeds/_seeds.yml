@@ -1,0 +1,26 @@
+version: 2
+
+seeds:
+  - name: kumon_advanced_stage_benchmarks
+    description: "Strict age-based stage reference lookup mapping student age (3 to 17) and subject to the minimum expected stage level. Students exceeding this benchmark are classified as academically advanced."
+    config:
+      column_types:
+        age: int64
+        subject_id: string
+        benchmark_stage_name: string
+    columns:
+      - name: age
+        description: "Student age in completed years at cancellation or reference date (3 to 17)."
+        tests:
+          - not_null
+      - name: subject_id
+        description: "Subject identifier ('m', 'p', 'i')."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['m', 'p', 'i']
+      - name: benchmark_stage_name
+        description: "Kumon stage name representing the strict baseline for that age and subject."
+        tests:
+          - not_null

@@ -1,22 +1,14 @@
--- Returns rows if any tuition payment is linked to a financial transaction
--- whose cost center is not classified as a revenue inflow (flow_type = 'IN').
-with tuition_payments as (
+-- Returns rows if any financial transaction linked to a tuition invoice
+-- is associated with a cost center that is not a revenue inflow (flow_type = 'IN').
+with financial_transactions as (
 
     select
         transaction_id,
-        customer_id,
-        reference_month
-    from {{ ref('stg_kumon__tuition_payments') }}
-
-),
-
-financial_transactions as (
-
-    select
-        transaction_id,
+        invoice_id,
         cost_center_id,
         amount
     from {{ ref('stg_kumon__financial_transactions') }}
+    where invoice_id is not null
 
 ),
 
@@ -31,15 +23,12 @@ cost_centers as (
 )
 
 select
-    tp.transaction_id,
-    tp.customer_id,
-    tp.reference_month,
+    ft.transaction_id,
+    ft.invoice_id,
     ft.cost_center_id,
     cc.cost_center_name,
     cc.flow_type
-from tuition_payments as tp
-inner join financial_transactions as ft
-    on tp.transaction_id = ft.transaction_id
+from financial_transactions as ft
 inner join cost_centers as cc
     on ft.cost_center_id = cc.cost_center_id
 where cc.flow_type != 'IN'

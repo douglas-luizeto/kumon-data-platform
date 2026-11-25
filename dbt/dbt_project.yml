@@ -28,3 +28,7 @@ tests:
   kumon_analytics:
     +store_failures: true
     +schema: audit_failures
+
+seeds:
+  kumon_analytics:
+    +quote_columns: false

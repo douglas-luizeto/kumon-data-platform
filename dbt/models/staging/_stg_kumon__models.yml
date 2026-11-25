@@ -232,6 +232,23 @@ models:
       - name: phone2
         description: "Secondary phone number."
 
+      - name: due_day
+        description: "Contracted day of the month for tuition due date."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [5, 10, 15, 20, 25, 30]
+                quote: false
+      - name: default_payment_method_id
+        description: "Default payment method selected by the customer."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__payment_methods')
+                field: payment_method_id
+
   - name: stg_kumon__accounts
     description: "Subject enrollments linking a student (kumon_id) to a specific subject contract."
     columns:
@@ -293,6 +310,18 @@ models:
         description: "Boolean flag equal to TRUE when cancellation_date is not NULL."
         tests:
           - not_null
+      - name: declared_churn_reason
+        description: "Churn reason declared by the guardian during the exit interview (NULL for active accounts)."
+        tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - 'Objetivo atingido'
+                  - 'Falta de tempo'
+                  - 'Financeiro'
+                  - 'Desmotivação/Dificuldade'
+                  - 'Mudança de cidade/escola'
+                  - 'Outros'
       - name: modality
         description: "Class attendance modality ('presencial' or 'online')."
         tests:
@@ -341,22 +370,7 @@ models:
         description: "Contracted monthly tuition fee in BRL."
         tests:
           - not_null
-      - name: due_day
-        description: "Contracted day of the month for tuition due date."
-        tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: [5, 10, 15, 20, 25, 30]
-                quote: false
-      - name: default_payment_method_id
-        description: "Default payment method selected by the customer."
-        tests:
-          - not_null
-          - relationships:
-              arguments:
-                to: ref('stg_kumon__payment_methods')
-                field: payment_method_id
+      
 
   # --------------------------------------------------------------------------
   # 3. Staging Transactional Models
@@ -481,8 +495,15 @@ models:
                 field: payment_method_id
       - name: competence_date
         description: "Accrual accounting date (DRE competence)."
+      
+      - name: invoice_id
+        description: "Foreign key referencing stg_kumon__tuition_invoices"
         tests:
-          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__tuition_invoices')
+                field: invoice_id
+
       - name: transaction_date
         description: "Cash settlement date (Cash Flow)."
         tests:
@@ -492,31 +513,60 @@ models:
         tests:
           - not_null
 
-  - name: stg_kumon__tuition_payments
-    description: "Tuition payment metadata linked 1:1 to settled financial transactions."
+  - name: stg_kumon__tuition_invoices
+    description: "Cleaned consolidated monthly family tuition invoices (header)."
     columns:
-      - name: transaction_id
-        description: "UUID primary key and foreign key referencing stg_kumon__financial_transactions."
+      - name: invoice_id
+        description: "Primary key for the tuition invoice."
         tests:
           - unique
           - not_null
-          - relationships:
-              arguments:
-                to: ref('stg_kumon__financial_transactions')
-                field: transaction_id
       - name: customer_id
-        description: "Foreign key referencing the paying guardian in stg_kumon__customers."
+        description: "Foreign key referencing the financial guardian."
         tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('stg_kumon__customers')
                 field: customer_id
-      - name: reference_month
-        description: "First day of the tuition competence month."
+      - name: competence_date
+        description: "Accrual month (always 1st day of the month)."
         tests:
           - not_null
       - name: due_date
-        description: "Original invoice due date."
+        description: "Contractual payment due date."
+        tests:
+          - not_null
+      - name: total_amount
+        description: "Total consolidated invoice amount."
+        tests:
+          - not_null
+
+  - name: stg_kumon__tuition_invoice_items
+    description: "Cleaned account-level line items for each tuition invoice."
+    columns:
+      - name: invoice_item_id
+        description: "Primary key for the invoice line item."
+        tests:
+          - unique
+          - not_null
+      - name: invoice_id
+        description: "Foreign key referencing the parent tuition invoice."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__tuition_invoices')
+                field: invoice_id
+      - name: account_id
+        description: "Foreign key referencing the billed subject enrollment."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kumon__accounts')
+                field: account_id
+      - name: amount
+        description: "Monthly fee billed for this account."
         tests:
           - not_null

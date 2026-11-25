@@ -20,7 +20,9 @@ renamed as (
         trim(zip_code) as zip_code,
         trim(city) as city,
         trim(state) as state,
-        trim(country) as country
+        trim(country) as country,
+        cast(due_day as int64) as due_day,
+        cast(default_payment_method_id as int64) as default_payment_method_id
 
     from source
 
