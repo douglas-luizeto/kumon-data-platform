@@ -1,7 +1,7 @@
 """
 PostgreSQL to BigQuery Replication Pipeline (Staging + MERGE Pattern)
 
-Extracts all 13 master (catalogs + entities) and transactional tables from a local
+Extracts all 14 master (catalogs + entities) and transactional tables from a local
 PostgreSQL instance, serializes records into an in-memory PyArrow Parquet buffer
 with strict typing, loads into a temporary BigQuery staging table, and executes
 an idempotent MERGE or full replacement into the target dataset.
@@ -57,7 +57,7 @@ load_dotenv_file(BASE_DIR / "infra/.env")
 
 
 # ==========================================
-# DECLARATIVE TABLE MANIFEST (13 TABLES)
+# DECLARATIVE TABLE MANIFEST (14 TABLES)
 # ==========================================
 @dataclass(frozen=True)
 class TableConfig:
@@ -190,6 +190,8 @@ TABLE_MANIFEST: Dict[str, TableConfig] = {
             bigquery.SchemaField("city", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("state", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("country", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("due_day", "INT64", mode="REQUIRED"),
+            bigquery.SchemaField("default_payment_method_id", "INT64", mode="REQUIRED"),
         ],
     ),
     "accounts": TableConfig(
@@ -216,12 +218,10 @@ TABLE_MANIFEST: Dict[str, TableConfig] = {
             bigquery.SchemaField("time_slot_2", "INT64", mode="NULLABLE"),
             bigquery.SchemaField("emp_2", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("monthly_fee", "NUMERIC", mode="REQUIRED"),
-            bigquery.SchemaField("due_day", "INT64", mode="REQUIRED"),
-            bigquery.SchemaField("default_payment_method_id", "INT64", mode="REQUIRED"),
         ],
     ),
     # ------------------------------------------
-    # 3. TRANSACTIONAL TABLES (4)
+    # 3. TRANSACTIONAL TABLES (5)
     # ------------------------------------------
     "interactions": TableConfig(
         table_name="interactions",
@@ -262,6 +262,33 @@ TABLE_MANIFEST: Dict[str, TableConfig] = {
             bigquery.SchemaField("status_id", "STRING", mode="REQUIRED"),
         ],
     ),
+    "tuition_invoices": TableConfig(
+        table_name="tuition_invoices",
+        pg_schema="transactional",
+        pk="invoice_id",
+        mode="incremental",
+        watermark_col="competence_date",
+        min_lookback_days=45,
+        bq_schema=[
+            bigquery.SchemaField("invoice_id", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("customer_id", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("competence_date", "DATE", mode="REQUIRED"),
+            bigquery.SchemaField("due_date", "DATE", mode="REQUIRED"),
+            bigquery.SchemaField("total_amount", "NUMERIC", mode="REQUIRED"),
+        ],
+    ),
+    "tuition_invoice_items": TableConfig(
+        table_name="tuition_invoice_items",
+        pg_schema="transactional",
+        pk="invoice_item_id",
+        mode="full",
+        bq_schema=[
+            bigquery.SchemaField("invoice_item_id", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("invoice_id", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("account_id", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("amount", "NUMERIC", mode="REQUIRED"),
+        ],
+    ),
     "financial_transactions": TableConfig(
         table_name="financial_transactions",
         pg_schema="transactional",
@@ -273,31 +300,11 @@ TABLE_MANIFEST: Dict[str, TableConfig] = {
             bigquery.SchemaField("transaction_id", "STRING", mode="REQUIRED"),
             bigquery.SchemaField("cost_center_id", "INT64", mode="REQUIRED"),
             bigquery.SchemaField("payment_method_id", "INT64", mode="REQUIRED"),
-            bigquery.SchemaField("competence_date", "DATE", mode="REQUIRED"),
+            bigquery.SchemaField("competence_date", "DATE", mode="NULLABLE"),
+            bigquery.SchemaField("invoice_id", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("transaction_date", "DATE", mode="REQUIRED"),
             bigquery.SchemaField("amount", "NUMERIC", mode="REQUIRED"),
             bigquery.SchemaField("description", "STRING", mode="NULLABLE"),
-        ],
-    ),
-    "tuition_payments": TableConfig(
-        table_name="tuition_payments",
-        pg_schema="transactional",
-        pk="transaction_id",
-        mode="incremental",
-        watermark_col="due_date",
-        min_lookback_days=5,
-        custom_incremental_sql="""
-            SELECT tp.transaction_id, tp.customer_id, tp.reference_month, tp.due_date
-            FROM transactional.tuition_payments tp
-            INNER JOIN transactional.financial_transactions ft
-                ON tp.transaction_id = ft.transaction_id
-            WHERE ft.transaction_date >= %s OR tp.due_date >= %s
-        """,
-        bq_schema=[
-            bigquery.SchemaField("transaction_id", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("customer_id", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("reference_month", "DATE", mode="REQUIRED"),
-            bigquery.SchemaField("due_date", "DATE", mode="REQUIRED"),
         ],
     ),
 }
@@ -550,7 +557,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         choices=list(TABLE_MANIFEST.keys()),
         default=list(TABLE_MANIFEST.keys()),
-        help="Specific table names to sync (default: all 13 tables in dependency order).",
+        help="Specific table names to sync (default: all 14 tables in dependency order).",
     )
     parser.add_argument(
         "--full-refresh",

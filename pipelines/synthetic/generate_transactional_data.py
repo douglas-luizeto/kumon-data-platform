@@ -1,8 +1,8 @@
 """
 Synthetic Data Generation Script for Transactional Tables (Kumon Unit)
 Reads master CSV files (employees, customers, accounts) and generates consistent
-transactional records for interactions, monthly_performance, financial_transactions,
-and tuition_payments respecting PostgreSQL schema constraints.
+transactional records for interactions, monthly_performance, tuition_invoices,
+tuition_invoice_items, and financial_transactions respecting PostgreSQL schema constraints.
 """
 
 from pathlib import Path
@@ -104,11 +104,13 @@ def load_master_data():
     acc_df["enroll_date"] = pd.to_datetime(acc_df["enroll_date"]).dt.date
     acc_df["cancellation_date"] = pd.to_datetime(acc_df["cancellation_date"]).dt.date
 
+    # Family-level billing attributes now reside on master.customers
+    cust_df["due_day"] = cust_df["due_day"].astype(int)
+    cust_df["default_payment_method_id"] = cust_df["default_payment_method_id"].astype(int)
+
     acc_df["initial_stage_id"] = acc_df["initial_stage_id"].astype(int)
     acc_df["time_slot_1"] = acc_df["time_slot_1"].astype(int)
     acc_df["time_slot_2"] = acc_df["time_slot_2"].astype(int)
-    acc_df["due_day"] = acc_df["due_day"].astype(int)
-    acc_df["default_payment_method_id"] = acc_df["default_payment_method_id"].astype(int)
     acc_df["monthly_fee"] = acc_df["monthly_fee"].astype(float)
 
     print(
@@ -194,7 +196,7 @@ def format_pg_array(tags_list):
     return "{" + ",".join(escaped) + "}"
 
 
-def simulate_attendance_Attributes(eff_profile, study_medium, max_study_days):
+def simulate_attendance_attributes(eff_profile, study_medium, max_study_days):
     """Samples attendance, homework days, quality, did_corrections, and behavior tags."""
     profile_params = {
         "exemplar": {
@@ -324,7 +326,7 @@ def generate_interactions(acc_df, profiles):
 
             # Makeup classes have higher attendance probability (~90%)
             if ev["is_makeup"]:
-                attended, is_just, days_studied, corr, qual, pg_tags = simulate_attendance_Attributes(
+                attended, is_just, days_studied, corr, qual, pg_tags = simulate_attendance_attributes(
                     eff_prof, study_medium, max_study_days
                 )
                 if not attended and random.random() < 0.80:
@@ -335,7 +337,7 @@ def generate_interactions(acc_df, profiles):
                     qual = "média"
                     pg_tags = None
             else:
-                attended, is_just, days_studied, corr, qual, pg_tags = simulate_attendance_Attributes(
+                attended, is_just, days_studied, corr, qual, pg_tags = simulate_attendance_attributes(
                     eff_prof, study_medium, max_study_days
                 )
 
@@ -400,7 +402,7 @@ def generate_interactions(acc_df, profiles):
             idx += 1
 
     inter_df = pd.DataFrame(interactions)
-    # Format nullable integer/boolean columns cleanly for CSV export
+    # Format nullable integer columns cleanly for CSV export
     inter_df["days_studied_since_last"] = inter_df["days_studied_since_last"].astype("Int64")
     inter_df.to_csv(DATA_DIR / "interactions.csv", index=False)
     print(f"[OK] interactions.csv generated with {len(inter_df)} records.")
@@ -441,7 +443,7 @@ def generate_monthly_performance(acc_df, inter_df, profiles):
     Generates monthly_performance records per student account from enrollment month
     through cancellation month (or end of window), synced with interactions.
     """
-    # Pre- track earliest enrollment date per kumon_id to identify 'EO' (multi-subject)
+    # Pre-track earliest enrollment date per kumon_id to identify 'EO' (multi-subject)
     earliest_enroll_by_student = acc_df.groupby("kumon_id")["enroll_date"].min().to_dict()
 
     # Pre-group interactions by account_id and month
@@ -542,27 +544,38 @@ def generate_monthly_performance(acc_df, inter_df, profiles):
     return perf_df
 
 
-# ==========================================
-# 5. FINANCIAL TRANSACTIONS & TUITION PAYMENTS
-# ==========================================
-def generate_financials(acc_df, emp_df):
+# ===================================================
+# 5. TUITION INVOICES, ITEMS & FINANCIAL TRANSACTIONS
+# ===================================================
+def generate_financials(acc_df, cust_df, emp_df):
     """
-    Generates granular financial_transactions and 1:1 tuition_fees across the 24 months,
-    modeling silent churn delinquency, payment delays, clearing days, and operating expenses.
-    """
-    fin_records = []
-    tuition_records = []
+    Generates consolidated family tuition_invoices, account-level tuition_invoice_items,
+    and granular financial_transactions across the 24-month simulation window.
 
-    # Identify 15% of canceled accounts that exhibit silent churn (delinquent in last 1-2 months)
+    Enforces the PostgreSQL XOR constraint on financial_transactions:
+    - Tuition inflows link to tuition_invoices via invoice_id (competence_date = None).
+    - Operating expenses set competence_date (1st of month) and invoice_id = None.
+    """
+    invoice_records = []
+    item_records = []
+    fin_records = []
+
+    # Fast lookup for family-level billing settings
+    cust_billing = cust_df.set_index("customer_id")[
+        ["due_day", "default_payment_method_id"]
+    ].to_dict(orient="index")
+
+    # Identify 15% of canceled accounts exhibiting silent churn (delinquent in last 1-2 months)
     canceled_acc_ids = acc_df[acc_df["cancellation_date"].notna()]["account_id"].tolist()
     silent_churn_ids = set(
         random.sample(canceled_acc_ids, k=max(1, int(round(len(canceled_acc_ids) * 0.15))))
     )
 
-    # Generate list of all 24 reference months
+    # Build list of all 24 competence months (always 1st day of the month)
     months = []
-    curr = START_DATE
-    while curr <= END_DATE:
+    curr = date(START_DATE.year, START_DATE.month, 1)
+    end_month = date(END_DATE.year, END_DATE.month, 1)
+    while curr <= end_month:
         months.append(curr)
         curr = date(curr.year + 1, 1, 1) if curr.month == 12 else date(curr.year, curr.month + 1, 1)
 
@@ -571,16 +584,16 @@ def generate_financials(acc_df, emp_df):
         monthly_fees_by_pm = {1: [], 2: [], 3: [], 4: []}
 
         # ------------------------------------------
-        # A. TUITION FEES (IN - cost_center_id = 1)
+        # A. CONSOLIDATED FAMILY TUITION INVOICES & ITEMS
         # ------------------------------------------
+        # Collect billable accounts per customer_id for this competence month
+        customer_billable_accounts = {}
+
         for _, acc in acc_df.iterrows():
-            acc_id = acc["account_id"]
+            cust_id = acc["customer_id"]
             enroll_d = acc["enroll_date"]
             cancel_d = acc["cancellation_date"]
-            due_day = int(acc["due_day"])
-            pm_id = int(acc["default_payment_method_id"])
-            fee_amount = float(acc["monthly_fee"])
-            subj = acc["subject_id"]
+            due_day = cust_billing[cust_id]["due_day"]
 
             enroll_m = date(enroll_d.year, enroll_d.month, 1)
             if ref_month < enroll_m:
@@ -588,7 +601,7 @@ def generate_financials(acc_df, emp_df):
 
             due_date = date(ref_month.year, ref_month.month, due_day)
 
-            # Skip if canceled before due_date
+            # Skip if account was canceled before this month or before due_date
             if pd.notna(cancel_d):
                 cancel_m = date(cancel_d.year, cancel_d.month, 1)
                 if ref_month > cancel_m:
@@ -596,51 +609,101 @@ def generate_financials(acc_df, emp_df):
                 if ref_month == cancel_m and cancel_d < due_date:
                     continue
 
-                # Check silent churn delinquency (last 1-2 months before cancellation)
-                months_to_cancel = (cancel_m.year - ref_month.year) * 12 + (cancel_m.month - ref_month.month)
-                if acc_id in silent_churn_ids and months_to_cancel <= 1:
-                    continue  # Unpaid tuition -> no record generated
+            customer_billable_accounts.setdefault(cust_id, []).append(acc)
 
-            # Random sporadic delinquency (~3% of base)
-            if random.random() < 0.03:
+        # Create 1 invoice per (customer_id, ref_month) and N invoice items
+        for cust_id, billable_accs in customer_billable_accounts.items():
+            invoice_id = str(uuid.uuid4())
+            due_day = cust_billing[cust_id]["due_day"]
+            default_pm_id = cust_billing[cust_id]["default_payment_method_id"]
+            due_date = date(ref_month.year, ref_month.month, due_day)
+
+            total_amount = round(sum(float(a["monthly_fee"]) for a in billable_accs), 2)
+
+            invoice_records.append({
+                "invoice_id": invoice_id,
+                "customer_id": cust_id,
+                "competence_date": ref_month,
+                "due_date": due_date,
+                "total_amount": total_amount,
+            })
+
+            has_silent_churn_account = False
+            latest_enroll_in_family = max(a["enroll_date"] for a in billable_accs)
+
+            for acc in billable_accs:
+                item_records.append({
+                    "invoice_item_id": str(uuid.uuid4()),
+                    "invoice_id": invoice_id,
+                    "account_id": acc["account_id"],
+                    "amount": round(float(acc["monthly_fee"]), 2),
+                })
+
+                # Check if any account in this family is in silent churn window
+                if acc["account_id"] in silent_churn_ids and pd.notna(acc["cancellation_date"]):
+                    cancel_m = date(acc["cancellation_date"].year, acc["cancellation_date"].month, 1)
+                    months_to_cancel = (
+                        (cancel_m.year - ref_month.year) * 12
+                        + (cancel_m.month - ref_month.month)
+                    )
+                    if months_to_cancel <= 1:
+                        has_silent_churn_account = True
+
+            # ------------------------------------------
+            # B. TUITION PAYMENT INFLOW (financial_transactions)
+            # ------------------------------------------
+            # Silent churn families leave the invoice unpaid (open delinquency)
+            if has_silent_churn_account:
                 continue
 
-            # Determine payment date (85% on time, 15% delayed by 3 to 35 days)
+            # Realistic delinquency: ~4% sporadic unpaid in past months, ~18% still open in final month
+            unpaid_prob = 0.18 if ref_month == end_month else 0.04
+            if random.random() < unpaid_prob:
+                continue
+
+            # Simulate payment timing around due_date (85% on-time/early, 15% overdue by 3-35 days)
             if random.random() < 0.85:
-                pay_offset = random.randint(-2, 0) if due_date > enroll_d else 0
-                payment_date = max(enroll_d, due_date + timedelta(days=pay_offset))
+                pay_offset = random.randint(-2, 0) if due_date > latest_enroll_in_family else 0
+                payment_date = max(latest_enroll_in_family, due_date + timedelta(days=pay_offset))
             else:
                 delay_days = random.randint(3, 35)
                 payment_date = due_date + timedelta(days=delay_days)
 
+            # Payment method correlated with customer default (85% default, 15% alternative)
+            pm_id = default_pm_id if random.random() < 0.85 else int(np.random.choice([1, 2, 3, 4]))
             settlement_days = PAYMENT_METHODS[pm_id]["settlement_days"]
-            transaction_date = min(END_DATE, payment_date + timedelta(days=settlement_days))
+            transaction_date = payment_date + timedelta(days=settlement_days)
 
-            tx_id = str(uuid.uuid4())
+            # If settlement occurs after simulation cutoff, keep invoice open/unpaid
+            if transaction_date > END_DATE:
+                continue
+
             fin_records.append({
-                "transaction_id": tx_id,
+                "transaction_id": str(uuid.uuid4()),
                 "cost_center_id": 1,
                 "payment_method_id": pm_id,
-                "competence_date": ref_month,
+                "competence_date": None,        # XOR rule: inherited from tuition_invoices
+                "invoice_id": invoice_id,
                 "transaction_date": transaction_date,
-                "amount": round(fee_amount, 2),
-                "description": f"Mensalidade - Aluno {acc['kumon_id']} ({subj.upper()})",
+                "amount": total_amount,
+                "description": (
+                    f"Mensalidade Consolidada - Fatura {invoice_id[:8]} "
+                    f"({ref_month.strftime('%Y-%m')}, {len(billable_accs)} matr.)"
+                ),
             })
 
-            tuition_records.append({
-                "transaction_id": tx_id,
-                "customer_id": acc["customer_id"],
-                "reference_month": ref_month,
-                "due_date": due_date,
-            })
+            # Accumulate realized revenue per subject for royalty calculation
+            for acc in billable_accs:
+                monthly_revenue_by_subj[acc["subject_id"]] += float(acc["monthly_fee"])
 
-            monthly_revenue_by_subj[subj] += fee_amount
-            monthly_fees_by_pm[pm_id].append((transaction_date, fee_amount))
+            # Track settled invoice for consolidated banking fee calculation
+            monthly_fees_by_pm[pm_id].append((transaction_date, total_amount))
 
         total_month_revenue = sum(monthly_revenue_by_subj.values())
 
         # ------------------------------------------
-        # B. GRANULAR OPERATING EXPENSES (OUT)
+        # C. GRANULAR OPERATING EXPENSES (OUT)
+        #    XOR rule: invoice_id = None, competence_date = ref_month (1st of month)
         # ------------------------------------------
         # 1. Salaries (cost_center_id = 4) -> 1 transaction per active employee
         sal_tx_date = date(ref_month.year, ref_month.month, 5)
@@ -653,12 +716,13 @@ def generate_financials(acc_df, emp_df):
                     "cost_center_id": 4,
                     "payment_method_id": 3,  # Pix
                     "competence_date": ref_month,
+                    "invoice_id": None,
                     "transaction_date": sal_tx_date,
                     "amount": round(float(emp["salary"]), 2),
                     "description": f"Salário - {emp['employee_type']} ({emp['emp_name']})",
                 })
 
-        # 2. Royalties (cost_center_id = 3) -> 4 transactions/month (14% per subject)
+        # 2. Royalties (cost_center_id = 3) -> 1 transaction per subject (14% of realized revenue)
         royalty_tx_date = date(ref_month.year, ref_month.month, 15)
         for subj_code, subj_rev in monthly_revenue_by_subj.items():
             if subj_rev > 0:
@@ -667,6 +731,7 @@ def generate_financials(acc_df, emp_df):
                     "cost_center_id": 3,
                     "payment_method_id": 1,  # Boleto
                     "competence_date": ref_month,
+                    "invoice_id": None,
                     "transaction_date": royalty_tx_date,
                     "amount": round(subj_rev * 0.14, 2),
                     "description": f"Royalties Franquia - Disciplina {subj_code.upper()}",
@@ -678,6 +743,7 @@ def generate_financials(acc_df, emp_df):
             "cost_center_id": 5,
             "payment_method_id": 1,
             "competence_date": ref_month,
+            "invoice_id": None,
             "transaction_date": date(ref_month.year, ref_month.month, 10),
             "amount": 2800.00,
             "description": "Aluguel do Imóvel Comercial",
@@ -696,18 +762,20 @@ def generate_financials(acc_df, emp_df):
                 "cost_center_id": 6,
                 "payment_method_id": 2,
                 "competence_date": ref_month,
+                "invoice_id": None,
                 "transaction_date": date(ref_month.year, ref_month.month, day_num),
                 "amount": val,
                 "description": desc,
             })
 
-        # 5. Taxes (cost_center_id = 7) -> Simples Nacional (6% of gross revenue)
+        # 5. Taxes (cost_center_id = 7) -> Simples Nacional (6% of realized gross revenue)
         if total_month_revenue > 0:
             fin_records.append({
                 "transaction_id": str(uuid.uuid4()),
                 "cost_center_id": 7,
                 "payment_method_id": 1,
                 "competence_date": ref_month,
+                "invoice_id": None,
                 "transaction_date": date(ref_month.year, ref_month.month, 20),
                 "amount": round(total_month_revenue * 0.06, 2),
                 "description": "Imposto Simples Nacional (DAS)",
@@ -730,27 +798,33 @@ def generate_financials(acc_df, emp_df):
                     "cost_center_id": 8,
                     "payment_method_id": pm_id,
                     "competence_date": ref_month,
+                    "invoice_id": None,
                     "transaction_date": date(ref_month.year, ref_month.month, 28),
                     "amount": round(total_pm_fee, 2),
-                    "description": f"Tarifas de Liquidação - {pm_cfg['name']} ({len(settled_list)} títulos)",
+                    "description": (
+                        f"Tarifas de Liquidação - {pm_cfg['name']} ({len(settled_list)} faturas)"
+                    ),
                 })
 
+    inv_df = pd.DataFrame(invoice_records)
+    items_df = pd.DataFrame(item_records)
     fin_df = pd.DataFrame(fin_records)
-    tuition_df = pd.DataFrame(tuition_records)
 
+    inv_df.to_csv(DATA_DIR / "tuition_invoices.csv", index=False)
+    items_df.to_csv(DATA_DIR / "tuition_invoice_items.csv", index=False)
     fin_df.to_csv(DATA_DIR / "financial_transactions.csv", index=False)
-    tuition_df.to_csv(DATA_DIR / "tuition_payments.csv", index=False)
 
+    print(f"[OK] tuition_invoices.csv generated with {len(inv_df)} records.")
+    print(f"[OK] tuition_invoice_items.csv generated with {len(items_df)} records.")
     print(f"[OK] financial_transactions.csv generated with {len(fin_df)} records.")
-    print(f"[OK] tuition_payments.csv generated with {len(tuition_df)} records.")
-    return fin_df, tuition_df
+    return inv_df, items_df, fin_df
 
 
 # ==========================================
 # 6. AUDIT AND SANITY CHECK
 # ==========================================
-def audit_transactional_data(acc_df, cust_df, inter_df, perf_df, fin_df, tuition_df):
-    """Validates relational integrity, business constraints, and prints 24-month P&L summary."""
+def audit_transactional_data(acc_df, cust_df, inter_df, perf_df, inv_df, items_df, fin_df):
+    """Validates relational integrity, XOR constraints, invoice totals, and prints 24-month P&L summary."""
     print("\n" + "=" * 60)
     print("TRANSACTIONAL DATA AUDIT & SANITY REPORT (24 MONTHS)")
     print("=" * 60)
@@ -758,12 +832,44 @@ def audit_transactional_data(acc_df, cust_df, inter_df, perf_df, fin_df, tuition
     # 1. Foreign Key & Constraint Checks
     valid_acc_ids = set(acc_df["account_id"])
     valid_cust_ids = set(cust_df["customer_id"])
-    valid_tx_ids = set(fin_df["transaction_id"])
+    valid_inv_ids = set(inv_df["invoice_id"])
 
     assert set(inter_df["account_id"]).issubset(valid_acc_ids), "FK violation: interactions -> accounts"
     assert set(perf_df["account_id"]).issubset(valid_acc_ids), "FK violation: monthly_performance -> accounts"
-    assert set(tuition_df["customer_id"]).issubset(valid_cust_ids), "FK violation: tuition_fees -> customers"
-    assert set(tuition_df["transaction_id"]).issubset(valid_tx_ids), "FK violation: tuition_fees -> financial_transactions"
+    assert set(inv_df["customer_id"]).issubset(valid_cust_ids), "FK violation: tuition_invoices -> customers"
+    assert set(items_df["invoice_id"]).issubset(valid_inv_ids), "FK violation: tuition_invoice_items -> tuition_invoices"
+    assert set(items_df["account_id"]).issubset(valid_acc_ids), "FK violation: tuition_invoice_items -> accounts"
+    assert set(fin_df["invoice_id"].dropna()).issubset(valid_inv_ids), (
+        "FK violation: financial_transactions -> tuition_invoices"
+    )
+
+    # Composite uniqueness checks
+    assert not inv_df.duplicated(subset=["customer_id", "competence_date"]).any(), (
+        "UNIQUE violation on tuition_invoices(customer_id, competence_date)"
+    )
+    assert not items_df.duplicated(subset=["invoice_id", "account_id"]).any(), (
+        "UNIQUE violation on tuition_invoice_items(invoice_id, account_id)"
+    )
+
+    # Strict XOR constraint check on financial_transactions
+    xor_valid = (fin_df["invoice_id"].isna() != fin_df["competence_date"].isna()).all()
+    assert xor_valid, "XOR violation: (invoice_id IS NULL) != (competence_date IS NULL) failed!"
+
+    # Day=1 competence_date check
+    assert (pd.to_datetime(inv_df["competence_date"]).dt.day == 1).all(), (
+        "CHECK violation: tuition_invoices.competence_date must be day 1"
+    )
+    non_null_comp = fin_df["competence_date"].dropna()
+    assert (pd.to_datetime(non_null_comp).dt.day == 1).all(), (
+        "CHECK violation: financial_transactions.competence_date must be day 1"
+    )
+
+    # Header total_amount == sum(line items amount)
+    items_sum = items_df.groupby("invoice_id")["amount"].sum().round(2)
+    inv_totals = inv_df.set_index("invoice_id")["total_amount"].round(2)
+    assert (items_sum.reindex(inv_totals.index) == inv_totals).all(), (
+        "Reconciliation error: tuition_invoices.total_amount != sum(tuition_invoice_items.amount)"
+    )
 
     # Stage consistency check
     acc_subj_map = acc_df.set_index("account_id")["subject_id"].to_dict()
@@ -773,7 +879,9 @@ def audit_transactional_data(acc_df, cust_df, inter_df, perf_df, fin_df, tuition
         assert 10 <= row["final_lesson_number"] <= 200 and row["final_lesson_number"] % 10 == 0
 
     print("\n1. Relational & Domain Integrity Checks:")
-    print("   - [PASS] All foreign keys (account_id, customer_id, transaction_id) verified.")
+    print("   - [PASS] All foreign keys (account_id, customer_id, invoice_id) verified.")
+    print("   - [PASS] Composite UNIQUE constraints and invoice total reconciliation verified.")
+    print("   - [PASS] Strict XOR constraint on financial_transactions verified.")
     print("   - [PASS] All stage progressions match subject catalogs and lesson bounds [10..200].")
 
     # 2. Interactions Summary
@@ -791,7 +899,18 @@ def audit_transactional_data(acc_df, cust_df, inter_df, perf_df, fin_df, tuition
     for st, cnt in perf_df["status_id"].value_counts().items():
         print(f"   - Status '{st}': {cnt:,} records ({cnt / len(perf_df) * 100:.1f}%)")
 
-    # 4. Simplified 24-Month P&L Statement
+    # 4. Billing & Delinquency Summary
+    paid_inv_ids = set(fin_df["invoice_id"].dropna())
+    total_billed = inv_df["total_amount"].sum()
+    paid_cnt = len(paid_inv_ids)
+    unpaid_cnt = len(inv_df) - paid_cnt
+    delinquency_rate = (unpaid_cnt / len(inv_df) * 100) if len(inv_df) > 0 else 0.0
+    print(f"\n4. Tuition Billing & Delinquency Summary:")
+    print(f"   - Total family invoices issued: {len(inv_df):,} ({len(items_df):,} account line items)")
+    print(f"   - Paid invoices: {paid_cnt:,} | Open/Delinquent: {unpaid_cnt:,} ({delinquency_rate:.1f}%)")
+    print(f"   - Total Billed Amount: R$ {total_billed:,.2f}")
+
+    # 5. Simplified 24-Month P&L Statement
     fin_df = fin_df.copy()
     fin_df["flow_type"] = fin_df["cost_center_id"].map(lambda c: COST_CENTERS[c]["flow_type"])
     fin_df["cost_center_name"] = fin_df["cost_center_id"].map(lambda c: COST_CENTERS[c]["name"])
@@ -801,7 +920,7 @@ def audit_transactional_data(acc_df, cust_df, inter_df, perf_df, fin_df, tuition
     net_income = total_rev - total_exp
     margin_pct = (net_income / total_rev * 100) if total_rev > 0 else 0.0
 
-    print("\n4. Simplified 24-Month P&L Statement (DRE Consolidada):")
+    print("\n5. Simplified 24-Month P&L Statement (DRE Consolidada):")
     print(f"   - Gross Revenue (Mensalidades Recebidas): R$ {total_rev:,.2f}")
     print(f"   - Total Operating Expenses:               R$ {total_exp:,.2f}")
     for cc_id in sorted(COST_CENTERS.keys()):
@@ -822,6 +941,6 @@ if __name__ == "__main__":
     profiles = assign_behavioral_profiles(acc_df)
     inter_df = generate_interactions(acc_df, profiles)
     perf_df = generate_monthly_performance(acc_df, inter_df, profiles)
-    fin_df, tuition_df = generate_financials(acc_df, emp_df)
-    audit_transactional_data(acc_df, cust_df, inter_df, perf_df, fin_df, tuition_df)
+    inv_df, items_df, fin_df = generate_financials(acc_df, cust_df, emp_df)
+    audit_transactional_data(acc_df, cust_df, inter_df, perf_df, inv_df, items_df, fin_df)
     print("Transactional data generation completed successfully! Files saved in data/")

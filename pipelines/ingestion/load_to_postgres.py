@@ -40,14 +40,16 @@ DB_CONFIG = {
 }
 
 # Ordered strictly by Foreign Key dependency hierarchy
+# Note: tuition_invoices must be loaded before tuition_invoice_items and financial_transactions
 LOAD_MANIFEST = [
     ("master.employees", "employees.csv"),
     ("master.customers", "customers.csv"),
     ("master.accounts", "accounts.csv"),
     ("transactional.interactions", "interactions.csv"),
     ("transactional.monthly_performance", "monthly_performance.csv"),
+    ("transactional.tuition_invoices", "tuition_invoices.csv"),
+    ("transactional.tuition_invoice_items", "tuition_invoice_items.csv"),
     ("transactional.financial_transactions", "financial_transactions.csv"),
-    ("transactional.tuition_payments", "tuition_payments.csv"),
 ]
 
 
