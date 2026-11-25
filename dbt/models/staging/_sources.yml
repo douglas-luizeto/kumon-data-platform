@@ -113,20 +113,29 @@ sources:
               - unique
               - not_null
 
+      - name: tuition_invoices
+        description: "Consolidated monthly family tuition invoices (header) defining competence month, due date, and total billed amount."
+        columns:
+          - name: invoice_id
+            description: "UUID primary key for the consolidated tuition invoice."
+            tests:
+              - unique
+              - not_null
+
+      - name: tuition_invoice_items
+        description: "Account-level line items detailing each active subject enrollment billed within a tuition invoice."
+        columns:
+          - name: invoice_item_id
+            description: "UUID primary key for the tuition invoice line item."
+            tests:
+              - unique
+              - not_null
+
       - name: financial_transactions
         description: "General financial ledger capturing all settled revenues and expenses (accrual and cash dates)."
         columns:
           - name: transaction_id
             description: "UUID primary key for the settled financial transaction."
-            tests:
-              - unique
-              - not_null
-
-      - name: tuition_payments
-        description: "1:1 subtype extension of financial_transactions detailing customer tuition payment metadata."
-        columns:
-          - name: transaction_id
-            description: "UUID primary key and foreign key referencing financial_transactions."
             tests:
               - unique
               - not_null

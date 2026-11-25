@@ -25,9 +25,7 @@ renamed as (
         trim(emp_1) as employee_1_id,
         cast(time_slot_2 as int64) as time_slot_2_id,
         trim(emp_2) as employee_2_id,
-        cast(monthly_fee as numeric) as monthly_fee,
-        cast(due_day as int64) as due_day,
-        cast(default_payment_method_id as int64) as default_payment_method_id
+        cast(monthly_fee as numeric) as monthly_fee
 
     from source
 
