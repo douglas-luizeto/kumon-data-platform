@@ -130,6 +130,10 @@ def generate_customers(n_customers=100):
             "email": fake.email(),
             "phone1": f"24{random.randint(900000000, 999999999)}",
             "phone2": f"24{random.randint(900000000, 999999999)}" if random.random() < 0.3 else None,
+            "due_day": np.random.choice([5, 10], p=[0.70, 0.30]),
+            "default_payment_method_id": int(
+                    np.random.choice([1, 2, 3, 4], p=[0.20, 0.40, 0.35, 0.05])
+                ),
             "street": fake.street_name(),
             "address_number": str(random.randint(1, 1500)),
             "complement": random.choice([
@@ -497,11 +501,7 @@ def generate_accounts(customers_df, employees_df):
                 "emp_1": emp_1,
                 "time_slot_2": slot_2,
                 "emp_2": emp_2,
-                "monthly_fee": 300.00,
-                "due_day": np.random.choice([5, 10], p=[0.70, 0.30]),
-                "default_payment_method_id": int(
-                    np.random.choice([1, 2, 3, 4], p=[0.20, 0.40, 0.35, 0.05])
-                ),
+                "monthly_fee": 300.00    
             })
 
     df = pd.DataFrame(accounts)
