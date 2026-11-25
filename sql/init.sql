@@ -224,6 +224,10 @@ CREATE TABLE master.customers (
     phone1 VARCHAR(15) NOT NULL CHECK (phone1 ~ '^[0-9]{10,15}$'),
     phone2 VARCHAR(15) CHECK (phone2 ~ '^[0-9]{10,15}$'),
 
+    -- payment preferences
+    due_day SMALLINT NOT NULL DEFAULT 5 CHECK (due_day IN (5, 10, 15, 20, 25, 30)),
+    default_payment_method_id SMALLINT NOT NULL REFERENCES master.payment_methods(payment_method_id),
+
     -- address
     street TEXT,
     address_number TEXT,
@@ -264,8 +268,6 @@ CREATE TABLE master.accounts (
 
     -- financial parameters
     monthly_fee NUMERIC(8,2) NOT NULL CHECK (monthly_fee >= 0),
-    due_day SMALLINT NOT NULL DEFAULT 5 CHECK (due_day IN (5, 10, 15, 20, 25, 30)),
-    default_payment_method_id SMALLINT NOT NULL REFERENCES master.payment_methods(payment_method_id),
 
     CONSTRAINT uq_kumon_id_subject_id UNIQUE (kumon_id, subject_id),
     CONSTRAINT chk_enroll_after_birth CHECK (enroll_date > birth_date),
@@ -282,22 +284,42 @@ CREATE TABLE master.accounts (
 -- Transactional tables: financial, tuition, account interactions and performance 
 -- ##################################################################################
 
+CREATE TABLE transactional.tuition_invoices (
+    invoice_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    customer_id UUID NOT NULL REFERENCES master.customers(customer_id),
+    competence_date DATE NOT NULL CHECK (EXTRACT(DAY FROM competence_date) = 1),
+    due_date DATE NOT NULL,
+    total_amount NUMERIC(10,2) NOT NULL CHECK (total_amount > 0),
+
+    CONSTRAINT uq_tuition_invoice_customer_month UNIQUE (customer_id, competence_date)
+);
+
+CREATE TABLE transactional.tuition_invoice_items (
+    invoice_item_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    invoice_id UUID NOT NULL REFERENCES transactional.tuition_invoices(invoice_id) ON DELETE CASCADE,
+    account_id UUID NOT NULL REFERENCES master.accounts(account_id),
+    amount NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+
+    CONSTRAINT uq_tuition_invoice_item_account UNIQUE (invoice_id, account_id)
+);
+
 CREATE TABLE transactional.financial_transactions (
     transaction_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     cost_center_id SMALLINT NOT NULL REFERENCES master.cost_centers(cost_center_id),
     payment_method_id SMALLINT NOT NULL REFERENCES master.payment_methods(payment_method_id),
-    
-    competence_date DATE NOT NULL, 
-    transaction_date DATE NOT NULL,
-    amount NUMERIC(10,2) NOT NULL CHECK (amount > 0), 
-    description TEXT
-);
 
-CREATE TABLE transactional.tuition_payments (
-    transaction_id UUID PRIMARY KEY REFERENCES transactional.financial_transactions(transaction_id),
-    customer_id UUID NOT NULL REFERENCES master.customers(customer_id),
-    reference_month DATE NOT NULL CHECK (EXTRACT(DAY FROM reference_month) = 1),
-    due_date DATE NOT NULL
+    competence_date DATE CHECK (competence_date IS NULL OR EXTRACT(DAY FROM competence_date) = 1),
+    invoice_id UUID REFERENCES transactional.tuition_invoices(invoice_id),
+
+    transaction_date DATE NOT NULL,
+    amount NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+    description TEXT,
+
+    CONSTRAINT chk_invoice_id_competence_date_match CHECK (
+        -- XOR rule: tuition payments inherit competence_date from tuition_invoices;
+        -- all other transactions (expenses/other revenues) must record competence_date directly.
+        (invoice_id IS NULL) != (competence_date IS NULL)
+    )
 );
 
 CREATE TABLE transactional.interactions (
